@@ -1,0 +1,4 @@
+.kiro/
+test_*.py
+verify_task*.md
+*.pyc
