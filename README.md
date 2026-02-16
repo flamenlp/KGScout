@@ -8,7 +8,7 @@ KGScout is a two-phase KGQA pipeline that:
 1. Uses a trained path ranking model to select top-k relevant triplets from a knowledge graph
 2. Employs Large Language Models (LLMs) to generate answers from the selected triplets
 
-The system supports comprehensive evaluation analysis including LLM comparison, k-value ablation studies, coverage analysis, and statistical comparisons between retriever methods.
+Comprehensive evaluation analysis including LLM comparison, k-value ablation studies, coverage analysis, and statistical comparisons between retriever methods are done here
 
 ## Installation
 
@@ -30,8 +30,7 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `preprocess_dataset` | Prepare datasets with PPR features |
-| `train` | Train KGscout model (pretraining + main training) |
+| `train` | Train KGscout model|
 | `inference` | Select top-k triplets from test data |
 | `evaluate` | Compute answer/path coverage metrics |
 | `llm-comparison` | Compare different LLM models |
@@ -56,7 +55,7 @@ python cli.py preprocess_dataset \
 ```
 
 **Parameters:**
-- `--input`: Path to input data file (JSON format)
+- `--input`: Path to input data file
 - `--output`: Path to output directory for preprocessed data
 
 **Input Format (JSON):**
