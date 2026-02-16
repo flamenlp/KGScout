@@ -141,9 +141,7 @@ def run_preprocess_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    import torch
-    import pickle
-    from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+    from services.preprocess_service import PreprocessService
     
     # Validate input file exists
     validate_file_exists(args.input, "Input data file")
@@ -158,40 +156,18 @@ def run_preprocess_command(args):
     print(f"Output directory: {args.output}")
     print("=" * 60)
     
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nUsing device: {device}")
+    # Create service and run preprocessing
+    service = PreprocessService()
+    results = service.preprocess(args.input, args.output)
     
-    # Load input data
-    print(f"\nLoading input data from {args.input}...")
-    with open(args.input, 'rb') as f:
-        input_data = pickle.load(f)
-    
-    print(f"Loaded {len(input_data)} samples")
-    
-    # Create JointTrainingDatasetv3PPR with PPR features
-    print("\nComputing PPR features...")
-    dataset = JointTrainingDatasetv3PPR(input_data, device=device)
-    
-    print(f"Preprocessing complete! Processed {len(dataset)} samples")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output, exist_ok=True)
-    
-    # Save preprocessed data to output directory
-    output_path = os.path.join(args.output, "preprocessed_data.pkl")
-    print(f"\nSaving preprocessed data to {output_path}...")
-    
-    with open(output_path, 'wb') as f:
-        pickle.dump(dataset.precomputed_data, f)
-    
+    # Print summary
     print("=" * 60)
     print("PREPROCESSING COMPLETE")
     print("=" * 60)
-    print(f"Preprocessed data saved to: {output_path}")
-    print(f"Total samples: {len(dataset)}")
-    if dataset.skipped_samples > 0:
-        print(f"Skipped samples: {dataset.skipped_samples}")
+    print(f"Preprocessed data saved to: {results['output_path']}")
+    print(f"Total samples: {results['total_samples']}")
+    if results['skipped_samples'] > 0:
+        print(f"Skipped samples: {results['skipped_samples']}")
     print("=" * 60)
 
 
@@ -205,16 +181,7 @@ def run_train_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    import torch
-    import pickle
-    from torch.utils.data import DataLoader
-    from model.path_ranker import PathRankingModel
-    from preprocess.joint_dataset import JointTrainingDatasetv3PPR
-    from preprocess.pretrain_dataset import CosinePretrainingDataset
-    from preprocess.sampled_dataset import SampledJointTrainingDataset
-    from training.pretrainer import Pretrainer
-    from training.trainer import Trainer
-    from training.monitor import TrainingMonitor
+    from services.train_service import TrainService
     
     # Validate input files exist
     validate_file_exists(args.train_data, "Training data file")
@@ -237,217 +204,29 @@ def run_train_command(args):
     print(f"Learning rate: {args.learning_rate}")
     print("=" * 60)
     
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nUsing device: {device}")
-    
-    # Load training and validation data
-    print("\nLoading training data...")
-    with open(args.train_data, 'rb') as f:
-        train_data = pickle.load(f)
-    
-    print("Loading validation data...")
-    with open(args.val_data, 'rb') as f:
-        val_data = pickle.load(f)
-    
-    # Create base datasets with PPR features
-    print("\nCreating base datasets with PPR features...")
-    train_base_dataset = JointTrainingDatasetv3PPR(train_data, device=device)
-    val_base_dataset = JointTrainingDatasetv3PPR(val_data, device=device)
-    
-    # ========================================================================
-    # PHASE 1: PRETRAINING (5 epochs, n=500, fixed)
-    # ========================================================================
-    print("\n" + "=" * 60)
-    print("PHASE 1: PRETRAINING")
-    print("=" * 60)
-    print("Configuration: 5 epochs, n=500 (fixed)")
-    
-    # Create pretraining datasets with fixed k=500
-    pretrain_train_dataset = CosinePretrainingDataset(train_base_dataset, k=500)
-    pretrain_val_dataset = CosinePretrainingDataset(val_base_dataset, k=500)
-    
-    # Create dataloaders for pretraining
-    # Use collate_fn to filter out None samples
-    def collate_fn(batch):
-        batch = [item for item in batch if item is not None]
-        if len(batch) == 0:
-            return None
-        return batch[0] if len(batch) == 1 else batch[0]
-    
-    pretrain_train_loader = DataLoader(
-        pretrain_train_dataset,
-        batch_size=1,
-        shuffle=True,
-        collate_fn=collate_fn
-    )
-    
-    pretrain_val_loader = DataLoader(
-        pretrain_val_dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=collate_fn
-    )
-    
-    # Initialize model for pretraining
-    print("\nInitializing PathRankingModel...")
-    path_ranker = PathRankingModel(hidden_size=384, device=device)
-    path_ranker.to(device)
-    
-    # Create pretraining checkpoint directory
-    pretrain_checkpoint_dir = os.path.join(args.checkpoint_dir, "pretraining")
-    os.makedirs(pretrain_checkpoint_dir, exist_ok=True)
-    
-    # Initialize pretrainer
-    pretrainer = Pretrainer(
-        path_ranker=path_ranker,
-        checkpoint_dir=pretrain_checkpoint_dir,
-        device=device
-    )
-    
-    # Run pretraining
-    print("\nStarting pretraining phase...")
-    pretrainer.train(
-        train_dataloader=pretrain_train_loader,
-        val_dataloader=pretrain_val_loader,
-        num_epochs=5,  # Fixed at 5 epochs
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        validation_interval=args.validation_interval,
-        save_best=True
-    )
-    
-    print("\nPretraining phase complete!")
-    
-    # ========================================================================
-    # PHASE 2: LOAD PRETRAINED MODEL
-    # ========================================================================
-    print("\n" + "=" * 60)
-    print("PHASE 2: LOADING PRETRAINED MODEL")
-    print("=" * 60)
-    
-    # Load best pretrained model checkpoint from epoch 5
-    pretrained_model_path = os.path.join(pretrain_checkpoint_dir, "best_pretrained_model-5.pt")
-    
-    if not os.path.exists(pretrained_model_path):
-        print(f"Warning: Checkpoint {pretrained_model_path} not found.")
-        print("Trying to load best_pretrained_model.pt instead...")
-        pretrained_model_path = os.path.join(pretrain_checkpoint_dir, "best_pretrained_model.pt")
-    
-    # Validate file exists with descriptive error
-    if not os.path.exists(pretrained_model_path):
-        raise FileNotFoundError(
-            f"Pretrained model checkpoint not found.\n"
-            f"Expected location: {pretrained_model_path}\n"
-            f"Please ensure pretraining completed successfully."
-        )
-    
-    print(f"Loading pretrained model from: {pretrained_model_path}")
-    
-    # Load checkpoint with error handling
-    try:
-        checkpoint = torch.load(pretrained_model_path, map_location=device)
-    except Exception as e:
-        raise FileNotFoundError(
-            f"Failed to load pretrained checkpoint from {pretrained_model_path}.\n"
-            f"The file may be corrupted or in an incompatible format.\n"
-            f"Error: {str(e)}"
-        )
-    
-    # Verify checkpoint has model_state_dict
-    if "model_state_dict" not in checkpoint:
-        raise ValueError(
-            f"Checkpoint is missing 'model_state_dict' key.\n"
-            f"The checkpoint may have been saved incorrectly or is corrupted.\n"
-            f"Available keys: {list(checkpoint.keys())}"
-        )
-    
-    # Create new model and load pretrained weights with error handling
-    path_ranker = PathRankingModel(hidden_size=384, device=device)
-    
-    try:
-        path_ranker.load_state_dict(checkpoint["model_state_dict"])
-    except RuntimeError as e:
-        raise ValueError(
-            f"Model architecture mismatch when loading pretrained weights.\n"
-            f"The checkpoint may have been saved with a different model architecture.\n"
-            f"Error details: {str(e)}"
-        )
-    
-    path_ranker.to(device)
-    
-    print("Pretrained weights loaded successfully!")
-    
-    # ========================================================================
-    # PHASE 3: MAIN TRAINING (with specified k parameter)
-    # ========================================================================
-    print("\n" + "=" * 60)
-    print("PHASE 3: MAIN TRAINING")
-    print("=" * 60)
-    print(f"Configuration: k={args.k}, {args.num_epochs} epochs")
-    
-    # Create main training datasets with configurable k
-    main_train_dataset = SampledJointTrainingDataset(train_base_dataset, k=args.k)
-    main_val_dataset = SampledJointTrainingDataset(val_base_dataset, k=args.k)
-    
-    # Create dataloaders for main training
-    main_train_loader = DataLoader(
-        main_train_dataset,
-        batch_size=1,
-        shuffle=True,
-        collate_fn=collate_fn
-    )
-    
-    main_val_loader = DataLoader(
-        main_val_dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=collate_fn
-    )
-    
-    # Create main training checkpoint directory
-    main_checkpoint_dir = os.path.join(args.checkpoint_dir, f"main_training_k{args.k}")
-    os.makedirs(main_checkpoint_dir, exist_ok=True)
-    
-    # Create training monitor
-    monitor_log_dir = os.path.join(main_checkpoint_dir, "training_logs")
-    monitor = TrainingMonitor(log_dir=monitor_log_dir)
-    
-    # Initialize trainer with pretrained model
-    trainer = Trainer(
-        path_ranker=path_ranker,
-        checkpoint_dir=main_checkpoint_dir,
-        device=device
-    )
-    
-    # Run main training
-    print("\nStarting main training phase...")
-    trainer.train(
-        train_dataloader=main_train_loader,
-        val_dataloader=main_val_loader,
-        monitor=monitor,
+    # Create service and run training
+    service = TrainService()
+    results = service.train(
+        train_data_path=args.train_data,
+        val_data_path=args.val_data,
+        checkpoint_dir=args.checkpoint_dir,
+        k=args.k,
         num_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         weight_decay=args.weight_decay,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         validation_interval=args.validation_interval,
-        early_stopping_patience=args.early_stopping_patience,
-        k=args.k
+        early_stopping_patience=args.early_stopping_patience
     )
     
-    print("\nMain training phase complete!")
-    
-    # ========================================================================
-    # TRAINING PIPELINE COMPLETE
-    # ========================================================================
+    # Print summary
     print("\n" + "=" * 60)
     print("TRAINING PIPELINE COMPLETE")
     print("=" * 60)
-    print(f"Pretraining checkpoints: {pretrain_checkpoint_dir}")
-    print(f"Main training checkpoints: {main_checkpoint_dir}")
-    print(f"Training logs: {monitor_log_dir}")
+    print(f"Pretraining checkpoints: {results['pretrain_checkpoint']}")
+    print(f"Main training checkpoints: {results['main_checkpoint']}")
+    print(f"Training logs: {results['log_dir']}")
     print("=" * 60)
 
 
@@ -458,12 +237,7 @@ def run_inference_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    import torch
-    import pickle
-    from torch.utils.data import DataLoader
-    from model.path_ranker import PathRankingModel
-    from preprocess.joint_dataset import JointTrainingDatasetv3PPR
-    from inference.predictor import Predictor
+    from services.inference_service import InferenceService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -484,101 +258,22 @@ def run_inference_command(args):
     print(f"Top-k: {args.top_k}")
     print("=" * 60)
     
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nUsing device: {device}")
-    
-    # Load test data
-    print(f"\nLoading test data from {args.test_data}...")
-    with open(args.test_data, 'rb') as f:
-        test_data = pickle.load(f)
-    
-    print(f"Loaded {len(test_data)} test samples")
-    
-    # Create test dataset with PPR features
-    print("\nCreating test dataset with PPR features...")
-    test_dataset = JointTrainingDatasetv3PPR(test_data, device=device)
-    
-    # Create dataloader
-    def collate_fn(batch):
-        batch = [item for item in batch if item is not None]
-        if len(batch) == 0:
-            return None
-        return batch[0] if len(batch) == 1 else batch[0]
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=collate_fn
+    # Create service and run inference
+    service = InferenceService()
+    results = service.run_inference(
+        model_path=args.model_path,
+        test_data_path=args.test_data,
+        output_dir=args.output_dir,
+        top_k=args.top_k
     )
     
-    # Load model checkpoint
-    print(f"\nLoading model checkpoint from {args.model_path}...")
-    
-    # Handle missing checkpoint file
-    if not os.path.exists(args.model_path):
-        raise FileNotFoundError(
-            f"Model checkpoint not found at: {args.model_path}\n"
-            f"Please ensure the model was trained and saved correctly."
-        )
-    
-    # Load checkpoint with error handling
-    try:
-        checkpoint = torch.load(args.model_path, map_location=device)
-    except Exception as e:
-        raise FileNotFoundError(
-            f"Failed to load checkpoint from {args.model_path}.\n"
-            f"The file may be corrupted or in an incompatible format.\n"
-            f"Error: {str(e)}"
-        )
-    
-    # Verify checkpoint has model_state_dict
-    if "model_state_dict" not in checkpoint:
-        raise ValueError(
-            f"Checkpoint is missing 'model_state_dict' key.\n"
-            f"The checkpoint may have been saved incorrectly or is corrupted.\n"
-            f"Available keys: {list(checkpoint.keys())}"
-        )
-    
-    # Create model and load weights with error handling
-    path_ranker = PathRankingModel(hidden_size=384, device=device)
-    
-    try:
-        path_ranker.load_state_dict(checkpoint["model_state_dict"])
-    except RuntimeError as e:
-        raise ValueError(
-            f"Model architecture mismatch when loading checkpoint.\n"
-            f"The checkpoint may have been saved with a different model architecture or hidden_size.\n"
-            f"Error details: {str(e)}"
-        )
-    
-    path_ranker.to(device)
-    
-    print("Model loaded successfully!")
-    
-    # Create Predictor instance
-    print("\nInitializing predictor...")
-    predictor = Predictor(model=path_ranker, device=device)
-    
-    # Run inference on test data
-    print(f"\nRunning inference to select top-{args.top_k} triplets...")
-    results = predictor.predict(
-        test_dataloader=test_loader,
-        top_k=args.top_k,
-        output_dir=args.output_dir
-    )
-    
-    # Print summary statistics
+    # Print summary
     print("\n" + "=" * 60)
     print("INFERENCE COMPLETE")
     print("=" * 60)
-    print(f"Total samples processed: {len(results)}")
-    print(f"Results saved to: {args.output_dir}")
-    
-    # Compute average reward
-    avg_reward = sum(r["reward"] for r in results) / len(results) if results else 0.0
-    print(f"Average reward: {avg_reward:.4f}")
+    print(f"Total samples processed: {results['total_samples']}")
+    print(f"Results saved to: {results['output_file']}")
+    print(f"Average reward: {results['average_reward']:.4f}")
     print("=" * 60)
 
 
@@ -589,13 +284,7 @@ def run_evaluate_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    import torch
-    import pickle
-    from torch.utils.data import DataLoader
-    from model.path_ranker import PathRankingModel
-    from preprocess.joint_dataset import JointTrainingDatasetv3PPR
-    from testing.evaluator import Evaluator
-    from training.trainer import Trainer
+    from services.evaluate_service import EvaluateService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -612,106 +301,303 @@ def run_evaluate_command(args):
     print(f"Top-k: {args.top_k}")
     print("=" * 60)
     
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nUsing device: {device}")
-    
-    # Load test data
-    print(f"\nLoading test data from {args.test_data}...")
-    with open(args.test_data, 'rb') as f:
-        test_data = pickle.load(f)
-    
-    print(f"Loaded {len(test_data)} test samples")
-    
-    # Create test dataset with PPR features
-    print("\nCreating test dataset with PPR features...")
-    test_dataset = JointTrainingDatasetv3PPR(test_data, device=device)
-    
-    # Create dataloader
-    def collate_fn(batch):
-        batch = [item for item in batch if item is not None]
-        if len(batch) == 0:
-            return None
-        return batch[0] if len(batch) == 1 else batch[0]
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=collate_fn
-    )
-    
-    # Load model checkpoint
-    print(f"\nLoading model checkpoint from {args.model_path}...")
-    
-    # Handle missing checkpoint file
-    if not os.path.exists(args.model_path):
-        raise FileNotFoundError(
-            f"Model checkpoint not found at: {args.model_path}\n"
-            f"Please ensure the model was trained and saved correctly."
-        )
-    
-    # Load checkpoint with error handling
-    try:
-        checkpoint = torch.load(args.model_path, map_location=device)
-    except Exception as e:
-        raise FileNotFoundError(
-            f"Failed to load checkpoint from {args.model_path}.\n"
-            f"The file may be corrupted or in an incompatible format.\n"
-            f"Error: {str(e)}"
-        )
-    
-    # Verify checkpoint has model_state_dict
-    if "model_state_dict" not in checkpoint:
-        raise ValueError(
-            f"Checkpoint is missing 'model_state_dict' key.\n"
-            f"The checkpoint may have been saved incorrectly or is corrupted.\n"
-            f"Available keys: {list(checkpoint.keys())}"
-        )
-    
-    # Create model and load weights with error handling
-    path_ranker = PathRankingModel(hidden_size=384, device=device)
-    
-    try:
-        path_ranker.load_state_dict(checkpoint["model_state_dict"])
-    except RuntimeError as e:
-        raise ValueError(
-            f"Model architecture mismatch when loading checkpoint.\n"
-            f"The checkpoint may have been saved with a different model architecture or hidden_size.\n"
-            f"Error details: {str(e)}"
-        )
-    
-    path_ranker.to(device)
-    
-    print("Model loaded successfully!")
-    
-    # Create Trainer instance (needed by Evaluator)
-    # Note: We don't need checkpoint_dir for evaluation, just pass empty string
-    trainer = Trainer(
-        path_ranker=path_ranker,
-        checkpoint_dir="",
-        device=device
-    )
-    
-    # Create Evaluator instance
-    print("\nInitializing evaluator...")
-    evaluator = Evaluator(device=device)
-    
-    # Run evaluation on test data
-    print(f"\nRunning evaluation with top-{args.top_k} triplets...")
-    metrics = evaluator.evaluate_answer_and_path_coverage(
-        test_dataloader=test_loader,
-        trainer=trainer,
+    # Create service and run evaluation
+    service = EvaluateService()
+    metrics = service.evaluate(
+        model_path=args.model_path,
+        test_data_path=args.test_data,
         top_k=args.top_k
     )
     
-    # Print metrics to console
+    # Print metrics
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
     print(f"Answer Coverage:  {metrics['answer_coverage']:.4f}")
     print(f"Path Coverage:    {metrics['path_coverage']:.4f}")
     print(f"Average Reward:   {metrics['average_reward']:.4f}")
+    print("=" * 60)
+
+
+def run_llm_comparison_command(args):
+    """
+    Execute LLM comparison analysis.
+    
+    Args:
+        args: Parsed command-line arguments
+    """
+    from services.llm_comparison_service import LLMComparisonService
+    
+    # Validate dataset parameter
+    if args.dataset not in ['webqsp', 'cwq']:
+        print(f"Error: Invalid dataset '{args.dataset}'. Must be 'webqsp' or 'cwq'.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model-path is provided when using kgscout retriever
+    if args.retriever_type == 'kgscout' and not args.model_path:
+        print("Error: --model-path is required when using kgscout retriever.", file=sys.stderr)
+        print("Suggestion: Provide the path to your trained KGscout model checkpoint.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model checkpoint exists if provided
+    if args.model_path:
+        validate_file_exists(args.model_path, "Model checkpoint")
+    
+    # Validate output directory is writable
+    validate_directory_writable(args.output_dir, "Output directory")
+    
+    # Display header
+    print("=" * 60)
+    print("LLM COMPARISON ANALYSIS")
+    print("=" * 60)
+    print(f"Dataset: {args.dataset}")
+    print(f"LLM Model: {args.llm_model}")
+    print(f"Retriever: {args.retriever_type}")
+    print(f"Top-k: {args.k}")
+    if args.model_path:
+        print(f"Model path: {args.model_path}")
+    print(f"Output directory: {args.output_dir}")
+    print("=" * 60)
+    
+    # Execute service
+    try:
+        service = LLMComparisonService()
+        results = service.run_comparison(
+            dataset=args.dataset,
+            llm_model=args.llm_model,
+            retriever_type=args.retriever_type,
+            k=args.k,
+            model_path=args.model_path,
+            output_dir=args.output_dir
+        )
+    except FileNotFoundError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError: Unexpected error during analysis: {str(e)}", file=sys.stderr)
+        print(f"Suggestion: Check logs for more details and verify all inputs are correct.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Display summary
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE")
+    print("=" * 60)
+    print(f"Total Questions: {results['total_questions']}")
+    print(f"\nMetrics:")
+    print(f"  Hit Score:       {results['hit']:.4f}")
+    print(f"  Hit@1 Score:     {results['hit_at_1']:.4f}")
+    print(f"  Macro F1:        {results['macro_f1']:.4f}")
+    print(f"  Macro Precision: {results['macro_precision']:.4f}")
+    print(f"  Macro Recall:    {results['macro_recall']:.4f}")
+    print(f"  Exact Match:     {results['exact_match']:.4f}")
+    print(f"\nOutput Files:")
+    print(f"  Predictions: {results['predictions_file']}")
+    print(f"  Results:     {results['results_file']}")
+    print("=" * 60)
+
+
+def run_k_ablation_command(args):
+    """
+    Execute k-value ablation study with Llama-3.1-8b.
+    
+    Args:
+        args: Parsed command-line arguments
+    """
+    from services.k_ablation_service import KAblationService
+    
+    # Validate dataset parameter
+    if args.dataset not in ['webqsp', 'cwq']:
+        print(f"Error: Invalid dataset '{args.dataset}'. Must be 'webqsp' or 'cwq'.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model-path is provided when using kgscout retriever
+    if args.retriever_type == 'kgscout' and not args.model_path:
+        print("Error: --model-path is required when using kgscout retriever.", file=sys.stderr)
+        print("Suggestion: Provide the path to your trained KGscout model checkpoint.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model checkpoint exists if provided
+    if args.model_path:
+        validate_file_exists(args.model_path, "Model checkpoint")
+    
+    # Validate output directory is writable
+    validate_directory_writable(args.output_dir, "Output directory")
+    
+    # Parse k-values if provided
+    k_values = None
+    if args.k_values:
+        try:
+            k_values = [int(k.strip()) for k in args.k_values.split(',')]
+            # Validate all k-values are positive
+            if any(k <= 0 for k in k_values):
+                print("Error: All k-values must be positive integers.", file=sys.stderr)
+                sys.exit(1)
+        except ValueError:
+            print(f"Error: Invalid k-values format '{args.k_values}'. Expected comma-separated integers (e.g., '30,50,100').", file=sys.stderr)
+            sys.exit(1)
+    
+    # Validate k if provided
+    if args.k is not None and args.k <= 0:
+        print(f"Error: k must be positive, got {args.k}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Execute service
+    try:
+        service = KAblationService()
+        results = service.run_ablation(
+            dataset=args.dataset,
+            retriever_type=args.retriever_type,
+            k_values=k_values,
+            k=args.k,
+            model_path=args.model_path,
+            output_dir=args.output_dir
+        )
+    except FileNotFoundError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError: Unexpected error during ablation study: {str(e)}", file=sys.stderr)
+        print(f"Suggestion: Check logs for more details and verify all inputs are correct.", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_coverage_analysis_command(args):
+    """
+    Execute coverage analysis to measure answer and path coverage.
+    
+    Args:
+        args: Parsed command-line arguments
+    """
+    from services.coverage_analysis_service import CoverageAnalysisService
+    
+    # Validate dataset parameter
+    if args.dataset not in ['webqsp', 'cwq']:
+        print(f"Error: Invalid dataset '{args.dataset}'. Must be 'webqsp' or 'cwq'.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model checkpoint exists
+    validate_file_exists(args.model_path, "Model checkpoint")
+    
+    # Validate output directory is writable
+    validate_directory_writable(args.output_dir, "Output directory")
+    
+    # Parse k-values if provided, otherwise use defaults
+    k_values = [30, 50, 100, 150]  # Default values
+    if args.k_values:
+        try:
+            k_values = [int(k.strip()) for k in args.k_values.split(',')]
+            # Validate all k-values are positive
+            if any(k <= 0 for k in k_values):
+                print("Error: All k-values must be positive integers.", file=sys.stderr)
+                sys.exit(1)
+        except ValueError:
+            print(f"Error: Invalid k-values format '{args.k_values}'. Expected comma-separated integers (e.g., '30,50,100').", file=sys.stderr)
+            sys.exit(1)
+    
+    # Display header
+    print("=" * 60)
+    print("COVERAGE ANALYSIS")
+    print("=" * 60)
+    print(f"Dataset: {args.dataset}")
+    print(f"Model path: {args.model_path}")
+    print(f"K-values: {k_values}")
+    print(f"Output directory: {args.output_dir}")
+    print("=" * 60)
+    
+    # Execute service
+    try:
+        service = CoverageAnalysisService()
+        results = service.run_coverage_analysis(
+            dataset=args.dataset,
+            model_path=args.model_path,
+            k_values=k_values,
+            output_dir=args.output_dir
+        )
+    except FileNotFoundError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError: Unexpected error during coverage analysis: {str(e)}", file=sys.stderr)
+        print(f"Suggestion: Check logs for more details and verify all inputs are correct.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Display summary
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE")
+    print("=" * 60)
+    print(f"Results saved to: {results['output_file']}")
+    print("=" * 60)
+
+
+def run_statistical_analysis_command(args):
+    """
+    Execute statistical comparison analysis with case categorization.
+    
+    Args:
+        args: Parsed command-line arguments
+    """
+    from services.statistical_analysis_service import StatisticalAnalysisService
+    
+    # Validate dataset parameter
+    if args.dataset not in ['webqsp', 'cwq']:
+        print(f"Error: Invalid dataset '{args.dataset}'. Must be 'webqsp' or 'cwq'.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate model checkpoint exists
+    validate_file_exists(args.model_path, "Model checkpoint")
+    
+    # Validate output directory is writable
+    validate_directory_writable(args.output_dir, "Output directory")
+    
+    # Validate k is positive
+    if args.k <= 0:
+        print(f"Error: k must be positive, got {args.k}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Display header
+    print("=" * 60)
+    print("STATISTICAL ANALYSIS")
+    print("=" * 60)
+    print(f"Dataset: {args.dataset}")
+    print(f"Model path: {args.model_path}")
+    print(f"Top-k: {args.k}")
+    print(f"Output directory: {args.output_dir}")
+    print("=" * 60)
+    
+    # Execute service
+    try:
+        service = StatisticalAnalysisService()
+        results = service.run_statistical_analysis(
+            dataset=args.dataset,
+            model_path=args.model_path,
+            k=args.k,
+            output_dir=args.output_dir
+        )
+    except FileNotFoundError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nError: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError: Unexpected error during statistical analysis: {str(e)}", file=sys.stderr)
+        print(f"Suggestion: Check logs for more details and verify all inputs are correct.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Display summary
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE")
+    print("=" * 60)
+    print(f"Results saved to: {results['output_file']}")
     print("=" * 60)
 
 
@@ -738,6 +624,44 @@ Examples:
   # Evaluate model
   python cli.py evaluate --model-path checkpoints/best_model.pt \\
                          --test-data data/test.json --top-k 100
+
+  # LLM comparison with KGscout retriever
+  python cli.py llm-comparison --dataset webqsp --llm-model llama \\
+                               --retriever-type kgscout --k 100 \\
+                               --model-path checkpoints/best_model.pt \\
+                               --output-dir results/
+
+  # LLM comparison with cosine retriever
+  python cli.py llm-comparison --dataset cwq --llm-model qwen \\
+                               --retriever-type cosine --k 50 \\
+                               --output-dir results/
+
+  # K-value ablation with KGscout retriever
+  python cli.py k-ablation --dataset webqsp --retriever-type kgscout \\
+                           --k-values 30,50,100,150 \\
+                           --model-path checkpoints/best_model.pt \\
+                           --output-dir results/
+
+  # K-value ablation with single k value
+  python cli.py k-ablation --dataset cwq --retriever-type cosine \\
+                           --k 100 --output-dir results/
+
+  # Coverage analysis with default k-values [30, 50, 100, 150]
+  python cli.py coverage-analysis --dataset webqsp \\
+                                  --model-path checkpoints/best_model.pt \\
+                                  --output-dir results/
+
+  # Coverage analysis with custom k-values
+  python cli.py coverage-analysis --dataset cwq \\
+                                  --model-path checkpoints/best_model.pt \\
+                                  --k-values 50,100,200 \\
+                                  --output-dir results/
+
+  # Statistical analysis comparing retrievers
+  python cli.py statistical-analysis --dataset webqsp \\
+                                     --model-path checkpoints/best_model.pt \\
+                                     --k 100 \\
+                                     --output-dir results/
         """
     )
     
@@ -896,6 +820,165 @@ Examples:
         help='Number of top triplets to evaluate (default: 100)'
     )
     
+    # ========================================================================
+    # llm-comparison command
+    # ========================================================================
+    llm_comparison_parser = subparsers.add_parser(
+        'llm-comparison',
+        help='Compare LLM models using the same retriever configuration'
+    )
+    llm_comparison_parser.add_argument(
+        '--dataset',
+        type=str,
+        required=True,
+        choices=['webqsp', 'cwq'],
+        help='Dataset to use for evaluation (webqsp or cwq)'
+    )
+    llm_comparison_parser.add_argument(
+        '--llm-model',
+        type=str,
+        required=True,
+        choices=['llama', 'qwen', 'deepseek'],
+        help='LLM model to use for answer generation (llama, qwen, or deepseek)'
+    )
+    llm_comparison_parser.add_argument(
+        '--retriever-type',
+        type=str,
+        required=True,
+        choices=['kgscout', 'cosine'],
+        help='Retriever type to use for triplet selection (kgscout or cosine)'
+    )
+    llm_comparison_parser.add_argument(
+        '--k',
+        type=int,
+        required=True,
+        help='Number of top triplets to select'
+    )
+    llm_comparison_parser.add_argument(
+        '--model-path',
+        type=str,
+        default=None,
+        help='Path to trained KGscout model checkpoint (required if retriever-type is kgscout)'
+    )
+    llm_comparison_parser.add_argument(
+        '--output-dir',
+        type=str,
+        required=True,
+        help='Directory to save evaluation results'
+    )
+    
+    # ========================================================================
+    # k-ablation command
+    # ========================================================================
+    k_ablation_parser = subparsers.add_parser(
+        'k-ablation',
+        help='Run k-value ablation study with Llama-3.1-8b to evaluate different k values'
+    )
+    k_ablation_parser.add_argument(
+        '--dataset',
+        type=str,
+        required=True,
+        choices=['webqsp', 'cwq'],
+        help='Dataset to use for evaluation (webqsp or cwq)'
+    )
+    k_ablation_parser.add_argument(
+        '--retriever-type',
+        type=str,
+        required=True,
+        choices=['kgscout', 'cosine'],
+        help='Retriever type to use for triplet selection (kgscout or cosine)'
+    )
+    k_ablation_parser.add_argument(
+        '--k-values',
+        type=str,
+        default=None,
+        help='Comma-separated list of k values to test (e.g., "30,50,100,150"). Defaults to [30, 50, 100, 150] if not provided'
+    )
+    k_ablation_parser.add_argument(
+        '--k',
+        type=int,
+        default=None,
+        help='Single k value to test (overrides --k-values if provided)'
+    )
+    k_ablation_parser.add_argument(
+        '--model-path',
+        type=str,
+        default=None,
+        help='Path to trained KGscout model checkpoint (required if retriever-type is kgscout)'
+    )
+    k_ablation_parser.add_argument(
+        '--output-dir',
+        type=str,
+        required=True,
+        help='Directory to save evaluation results'
+    )
+    
+    # ========================================================================
+    # coverage-analysis command
+    # ========================================================================
+    coverage_analysis_parser = subparsers.add_parser(
+        'coverage-analysis',
+        help='Analyze answer and path coverage for different k values comparing KGscout vs Cosine retrievers'
+    )
+    coverage_analysis_parser.add_argument(
+        '--dataset',
+        type=str,
+        required=True,
+        choices=['webqsp', 'cwq'],
+        help='Dataset to use for evaluation (webqsp or cwq)'
+    )
+    coverage_analysis_parser.add_argument(
+        '--model-path',
+        type=str,
+        required=True,
+        help='Path to trained KGscout model checkpoint'
+    )
+    coverage_analysis_parser.add_argument(
+        '--k-values',
+        type=str,
+        default=None,
+        help='Comma-separated list of k values to test (e.g., "30,50,100,150"). Defaults to [30, 50, 100, 150] if not provided'
+    )
+    coverage_analysis_parser.add_argument(
+        '--output-dir',
+        type=str,
+        required=True,
+        help='Directory to save evaluation results'
+    )
+    
+    # ========================================================================
+    # statistical-analysis command
+    # ========================================================================
+    statistical_analysis_parser = subparsers.add_parser(
+        'statistical-analysis',
+        help='Perform statistical comparison between cosine and KGscout retrievers with case categorization'
+    )
+    statistical_analysis_parser.add_argument(
+        '--dataset',
+        type=str,
+        required=True,
+        choices=['webqsp', 'cwq'],
+        help='Dataset to use for evaluation (webqsp or cwq)'
+    )
+    statistical_analysis_parser.add_argument(
+        '--model-path',
+        type=str,
+        required=True,
+        help='Path to trained KGscout model checkpoint'
+    )
+    statistical_analysis_parser.add_argument(
+        '--k',
+        type=int,
+        required=True,
+        help='Number of top triplets to select'
+    )
+    statistical_analysis_parser.add_argument(
+        '--output-dir',
+        type=str,
+        required=True,
+        help='Directory to save evaluation results'
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -908,6 +991,14 @@ Examples:
         run_inference_command(args)
     elif args.command == 'evaluate':
         run_evaluate_command(args)
+    elif args.command == 'llm-comparison':
+        run_llm_comparison_command(args)
+    elif args.command == 'k-ablation':
+        run_k_ablation_command(args)
+    elif args.command == 'coverage-analysis':
+        run_coverage_analysis_command(args)
+    elif args.command == 'statistical-analysis':
+        run_statistical_analysis_command(args)
     else:
         parser.print_help()
         sys.exit(1)
