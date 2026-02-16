@@ -1,6 +1,6 @@
 # KGScout
 
-Knowledge Graph Question Answering system with path ranking and LLM-based answer generation.
+Official implementation of paper **KG-Scout: A Policy Driven Knowledge-Graph Retrieval to Mitigate Factual Inaccuracies of Large Language Model**
 
 ## Overview
 
