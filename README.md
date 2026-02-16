@@ -1,6 +1,6 @@
 # KGScout
 
-Official implementation of paper **KG-Scout: A Policy Driven Knowledge-Graph Retrieval to Mitigate Factual Inaccuracies of Large Language Model**
+This repository contains the official implementation of the paper **KG-Scout: A Policy Driven Knowledge-Graph Retrieval to Mitigate Factual Inaccuracies of Large Language Model**
 
 ## Overview
 
