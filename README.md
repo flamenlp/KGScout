@@ -543,39 +543,3 @@ predicted_answer_2
   }
 }
 ```
-
----
-
-## Metrics Explained
-
-- **Hit**: Whether any predicted answer matches any ground truth answer (binary: 0 or 1)
-- **Hit@1**: Whether the first predicted answer matches any ground truth answer
-- **Macro F1**: Average F1 score across all questions
-- **Macro Precision**: Average precision across all questions
-- **Macro Recall**: Average recall across all questions
-- **Exact Match**: Whether all predictions match all ground truths exactly
-- **Answer Coverage**: Percentage of questions where answer entities exist in selected triplets
-- **Path Coverage**: Percentage of questions where a complete reasoning path exists from question entities to answer entities
-
----
-
-## Error Handling
-
-All commands include comprehensive error handling:
-
-- **Missing files**: Clear error messages with expected file paths
-- **Invalid parameters**: Validation with helpful suggestions
-- **Processing failures**: Individual question failures are logged but don't stop execution
-- **Output errors**: Directory creation and file write validation
-
----
-
-## Requirements
-
-- Python 3.8+
-- PyTorch
-- Transformers (for LLM inference)
-- tqdm (for progress bars)
-- NetworkX (for path coverage analysis)
-
-See `requirements.txt` for complete dependencies.
