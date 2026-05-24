@@ -26,6 +26,12 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
+# Required for torch.load() to unpickle datasets saved from notebooks
+# The .pt files were saved with the class in __main__, so we register it here
+from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+import __main__
+__main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
+
 # Set seeds
 torch.manual_seed(100)
 np.random.seed(100)
@@ -939,7 +945,7 @@ MODEL_ABLATION_CONFIGS = {
 }
 
 
-def run_model_ablation(train_dataset_path: str, val_dataset_path: str,
+def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
                        test_dataset_path: str, output_base_dir: str = "./results/model-ablation",
                        experiments: Optional[List[str]] = None):
     """
