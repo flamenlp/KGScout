@@ -945,11 +945,13 @@ MODEL_ABLATION_CONFIGS = {
 }
 
 
-def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
+def run_model_ablation(train_dataset_path: str, val_dataset_path: str,
                        test_dataset_path: str, output_base_dir: str = "./results/model-ablation",
                        experiments: Optional[List[str]] = None):
     """
     Run all model architecture ablation experiments.
+    Phase 1: Train all models (pretrain + REINFORCE train)
+    Phase 2: Load test data once, then load each trained model and run inference.
 
     Args:
         train_dataset_path: Path to training dataset (.pt file)
@@ -962,16 +964,17 @@ def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
     logger.info("MODEL ARCHITECTURE ABLATION STUDIES")
     logger.info("=" * 70)
 
-    # Load datasets
-    logger.info("Loading datasets...")
-    train_data = torch.load(train_dataset_path, weights_only=False)
-    val_data = torch.load(val_dataset_path, weights_only=False)
-    test_data = torch.load(test_dataset_path, weights_only=False)
+    configs_to_run = experiments if experiments else list(MODEL_ABLATION_CONFIGS.keys())
+
+    # ==================================================================
+    # PHASE 1: Train all models
+    # ==================================================================
+    logger.info("PHASE 1: Training all model variants")
+    logger.info("Loading train/val datasets...")
+    train_data = torch.load(train_dataset_path, weights_only=False, map_location="cpu")
+    val_data = torch.load(val_dataset_path, weights_only=False, map_location="cpu")
     logger.info(f"  Train: {len(train_data)} samples")
     logger.info(f"  Val: {len(val_data)} samples")
-    logger.info(f"  Test: {len(test_data)} samples")
-
-    configs_to_run = experiments if experiments else list(MODEL_ABLATION_CONFIGS.keys())
 
     for exp_name in configs_to_run:
         config = MODEL_ABLATION_CONFIGS[exp_name]
@@ -983,11 +986,10 @@ def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
         model_dir = os.path.join(exp_dir, "model")
         pretrain_dir = os.path.join(model_dir, "pretrained")
         train_dir = os.path.join(model_dir, "trained")
-        result_dir = os.path.join(exp_dir, "triplet-result")
         os.makedirs(exp_dir, exist_ok=True)
 
         # --- Step 1: Pretrain with n=500 ---
-        logger.info(f"[1/3] Pretraining (n=500, 5 epochs)...")
+        logger.info(f"[1/2] Pretraining (n=500, 5 epochs)...")
         # Fresh model initialization - ensures no weight leakage from previous experiment
         model = config["model_class"](device=str(device))
         pretrain_dataset = CosinePretrainingDataset(train_data, k=500)
@@ -999,11 +1001,11 @@ def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
         pretrainer.train(pretrain_loader, pretrain_val_loader, num_epochs=5)
 
         # Load best pretrained weights
-        pretrained_ckpt = torch.load(os.path.join(pretrain_dir, "best_pretrained_model-5.pt"), weights_only=False)
+        pretrained_ckpt = torch.load(os.path.join(pretrain_dir, "best_pretrained_model-5.pt"), weights_only=False, map_location="cpu")
         model.load_state_dict(pretrained_ckpt["model_state_dict"])
 
         # --- Step 2: Train with k=1000, sampling k=100 ---
-        logger.info(f"[2/3] Training (k=1000, sample k=100, 30 epochs)...")
+        logger.info(f"[2/2] Training (k=1000, sample k=100, 30 epochs)...")
         train_sampled = SampledJointTrainingDataset(train_data, k=1000)
         val_sampled = SampledJointTrainingDataset(val_data, k=1000)
         train_loader = DataLoader(train_sampled, batch_size=1, shuffle=True)
@@ -1017,26 +1019,94 @@ def  run_model_ablation(train_dataset_path: str, val_dataset_path: str,
             train_loader, val_loader,
             num_epochs=30, learning_rate=1e-4, warmup_steps=100,
             scheduler_type='cosine', validation_interval=1,
-            early_stopping_patience=3, k=100)
+            early_stopping_patience=10, k=100)
 
-        # --- Step 3: Inference on test data ---
-        logger.info(f"[3/3] Running inference (k=1000, top_k=100)...")
-        test_sampled = SampledJointTrainingDataset(test_data, k=1000)
-        test_loader = DataLoader(test_sampled, batch_size=1, shuffle=False)
-        generate_selected_json(test_loader, result_dir, trainer, top_k=100)
-
-        logger.info(f"  Results saved to: {exp_dir}")
-        logger.info(f"    Model: {model_dir}")
-        logger.info(f"    Triplet results: {result_dir}")
+        logger.info(f"  Model trained and saved to: {train_dir}")
 
         # --- Cleanup: offload model from GPU before next experiment ---
         del trainer, pretrainer, model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
         logger.info(f"  GPU memory released for next experiment.")
 
+    # Free train/val data from memory before loading test data
+    del train_data, val_data
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # ==================================================================
+    # PHASE 2: Inference - load test data once, then load each model
+    # ==================================================================
+    logger.info(f"{'='*70}")
+    logger.info("PHASE 2: Running inference on test data")
+    logger.info(f"{'='*70}")
+    logger.info("Loading test dataset...")
+    test_data = torch.load(test_dataset_path, weights_only=False, map_location="cpu")
+    logger.info(f"  Test: {len(test_data)} samples")
+
+    for exp_name in configs_to_run:
+        config = MODEL_ABLATION_CONFIGS[exp_name]
+        logger.info(f"  Inference for: {exp_name}")
+
+        exp_dir = os.path.join(output_base_dir, exp_name)
+        train_dir = os.path.join(exp_dir, "model", "trained")
+        result_dir = os.path.join(exp_dir, "triplet-result")
+
+        # Find the last checkpoint (epoch 30, or best if early stopped)
+        checkpoint_dir = _find_last_checkpoint(train_dir)
+        if checkpoint_dir is None:
+            logger.warning(f"  No checkpoint found in {train_dir}, skipping inference.")
+            continue
+
+        logger.info(f"  Loading checkpoint: {checkpoint_dir}")
+
+        # Reload model from checkpoint
+        model = config["model_class"](device=str(device))
+        ckpt_path = os.path.join(checkpoint_dir, "path_ranker.pt")
+        state = torch.load(ckpt_path, weights_only=False, map_location="cpu")
+        model.load_state_dict(state, strict=False)
+        model.to(device)
+
+        # Create a minimal trainer wrapper for inference
+        trainer = JointTrainer(
+            model, compute_reward_v8,
+            checkpoint_dir=train_dir)
+
+        # Run inference
+        test_sampled = SampledJointTrainingDataset(test_data, k=1000)
+        test_loader = DataLoader(test_sampled, batch_size=1, shuffle=False)
+        generate_selected_json(test_loader, result_dir, trainer, top_k=100)
+
+        logger.info(f"  Results saved to: {result_dir}")
+
+        # Cleanup
+        del trainer, model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
     logger.info(f"{'='*70}")
     logger.info("ALL MODEL ABLATION EXPERIMENTS COMPLETE")
     logger.info(f"{'='*70}")
+
+
+def _find_last_checkpoint(train_dir: str) -> Optional[str]:
+    """Find the last epoch checkpoint directory (prefers epoch 30, falls back to highest epoch)."""
+    if not os.path.exists(train_dir):
+        return None
+    # Look for checkpoint directories
+    checkpoints = []
+    for d in os.listdir(train_dir):
+        full_path = os.path.join(train_dir, d)
+        if os.path.isdir(full_path) and "checkpoint" in d:
+            checkpoints.append(full_path)
+    if not checkpoints:
+        return None
+    # Sort by epoch number (extract from directory name)
+    def get_epoch(path):
+        name = os.path.basename(path)
+        # Handles: checkpoint_epoch_30, checkpoint_best_epoch_30
+        import re
+        match = re.search(r'epoch_(\d+)', name)
+        return int(match.group(1)) if match else 0
+    checkpoints.sort(key=get_epoch, reverse=True)
+    return checkpoints[0]
 
 
 if __name__ == "__main__":
