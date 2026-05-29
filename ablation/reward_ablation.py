@@ -765,7 +765,14 @@ def run_reward_ablation(train_dataset_path: str, val_dataset_path: str,
         model = PathRankingModelOriginal(device=str(device))
         ckpt_path = os.path.join(checkpoint_dir, "path_ranker.pt")
         state = torch.load(ckpt_path, weights_only=False, map_location="cpu")
-        model.load_state_dict(state, strict=False)
+        # The checkpoint is a dict of sub-module state dicts (not a flat model state_dict)
+        for key, value in state.items():
+            if key in ('temperature', 'baseline'):
+                getattr(model, key).data = value
+            elif hasattr(model, key):
+                getattr(model, key).load_state_dict(value)
+            else:
+                logger.warning(f"  Unexpected key in checkpoint: '{key}' (model has no such attribute)")
         model.to(device)
 
         # Create a minimal trainer wrapper for inference

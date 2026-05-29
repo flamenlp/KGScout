@@ -24,14 +24,11 @@ import re
 import argparse
 import logging
 import time
-import numpy as np
-import networkx as nx
-from typing import List, Optional, Tuple
+from typing import Optional
 from tqdm import tqdm
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import networkx as nx
 from torch.utils.data import Dataset, DataLoader
 
 # Add project root to path
@@ -41,6 +38,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preprocess.joint_dataset import JointTrainingDatasetv3PPR
 import __main__
 __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
+
+# Import model architectures from ablation modules
+from ablation.model_ablation import (
+    PathRankingModelOriginal,
+    PathRankingModelNoPPR,
+    PathRankingModelNoRT,
+    PathRankingModelNoTT,
+    PathRankingModelNoGate,
+    PathRankingModelNoRA,
+    PathRankingModelNoTA,
+)
 
 # ============================================================================
 # HARDCODED CONFIGURATION
@@ -54,6 +62,17 @@ LOG_FILE = "ablation_triplet_analysis_log.txt"
 
 MODEL_VARIANTS = ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
 REWARD_VARIANTS = ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
+
+# Variant → model class mapping
+MODEL_CLASS_MAP = {
+    "no-ppr": PathRankingModelNoPPR,
+    "no-rt": PathRankingModelNoRT,
+    "no-tt": PathRankingModelNoTT,
+    "no-gate": PathRankingModelNoGate,
+    "no-ra": PathRankingModelNoRA,
+    "no-ta": PathRankingModelNoTA,
+}
+REWARD_MODEL_CLASS = PathRankingModelOriginal
 
 # ============================================================================
 # LOGGING
@@ -76,272 +95,6 @@ def setup_logging(log_file):
     sh.setLevel(logging.INFO)
     sh.setFormatter(formatter)
     logger.addHandler(sh)
-
-
-# ============================================================================
-# MODEL CLASSES (same as in ablation/model_ablation.py)
-# ============================================================================
-
-def _sample_paths_impl(probabilities, paths, k, ranking_scores):
-    if len(paths) <= k:
-        log_probs = torch.log(probabilities + 1e-10)
-        return paths, probabilities, ranking_scores, log_probs
-    selected_indices = []
-    log_probs_list = []
-    remaining_indices = torch.ones(len(probabilities), dtype=torch.bool, device=probabilities.device)
-    for _ in range(min(k, len(paths))):
-        masked_probs = probabilities * remaining_indices.float()
-        masked_probs = masked_probs / (masked_probs.sum() + 1e-10)
-        masked_dist = torch.distributions.Categorical(probs=masked_probs)
-        idx = masked_dist.sample()
-        log_prob = masked_dist.log_prob(idx)
-        selected_indices.append(idx.item())
-        log_probs_list.append(log_prob)
-        remaining_indices[idx] = False
-    selected_indices_tensor = torch.tensor(selected_indices, device=probabilities.device)
-    log_probs = torch.stack(log_probs_list)
-    selected_paths = [paths[i] for i in selected_indices]
-    selected_probs = probabilities[selected_indices_tensor]
-    selected_ranking_scores = ranking_scores[selected_indices_tensor]
-    return selected_paths, selected_probs, selected_ranking_scores, log_probs
-
-
-class PathRankingModelOriginal(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.gate_network = nn.Sequential(nn.Linear(self.hidden_size * 3, self.hidden_size), nn.LayerNorm(self.hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(self.hidden_size, self.hidden_size // 2), nn.ReLU(), nn.Linear(self.hidden_size // 2, 1), nn.Sigmoid())
-        self.triplet_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.relation_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.combiner_mlp = nn.Sequential(nn.Linear(3, hidden_size // 2), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
-        path_gates = self.gate_network(gate_input).squeeze(-1)
-        triplet_centric_input = torch.cat([triplet_embeds, triplet_attended, question_expanded, graph_scores], dim=-1)
-        tower_A_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
-        relation_centric_input = torch.cat([relation_embeds, relation_attended, question_expanded, graph_scores], dim=-1)
-        tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
-        combiner_input = torch.stack([tower_A_scores, tower_B_scores, path_gates], dim=-1)
-        combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoPPR(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.gate_network = nn.Sequential(nn.Linear(self.hidden_size * 3, self.hidden_size), nn.LayerNorm(self.hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(self.hidden_size, self.hidden_size // 2), nn.ReLU(), nn.Linear(self.hidden_size // 2, 1), nn.Sigmoid())
-        self.triplet_mlp = nn.Sequential(nn.Linear(hidden_size * 3, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.relation_mlp = nn.Sequential(nn.Linear(hidden_size * 3, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.combiner_mlp = nn.Sequential(nn.Linear(3, hidden_size // 2), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
-        path_gates = self.gate_network(gate_input).squeeze(-1)
-        triplet_centric_input = torch.cat([triplet_embeds, triplet_attended, question_expanded], dim=-1)
-        tower_A_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
-        relation_centric_input = torch.cat([relation_embeds, relation_attended, question_expanded], dim=-1)
-        tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
-        combiner_input = torch.stack([tower_A_scores, tower_B_scores, path_gates], dim=-1)
-        combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoRT(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.gate_network = nn.Sequential(nn.Linear(self.hidden_size * 3, self.hidden_size), nn.LayerNorm(self.hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(self.hidden_size, self.hidden_size // 2), nn.ReLU(), nn.Linear(self.hidden_size // 2, 1), nn.Sigmoid())
-        self.triplet_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.combiner_mlp = nn.Sequential(nn.Linear(2, hidden_size // 2), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
-        path_gates = self.gate_network(gate_input).squeeze(-1)
-        triplet_centric_input = torch.cat([triplet_embeds, triplet_attended, question_expanded, graph_scores], dim=-1)
-        tower_A_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
-        combiner_input = torch.stack([tower_A_scores, path_gates], dim=-1)
-        combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoTT(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.gate_network = nn.Sequential(nn.Linear(self.hidden_size * 3, self.hidden_size), nn.LayerNorm(self.hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(self.hidden_size, self.hidden_size // 2), nn.ReLU(), nn.Linear(self.hidden_size // 2, 1), nn.Sigmoid())
-        self.relation_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.combiner_mlp = nn.Sequential(nn.Linear(2, hidden_size // 2), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
-        path_gates = self.gate_network(gate_input).squeeze(-1)
-        relation_centric_input = torch.cat([relation_embeds, relation_attended, question_expanded, graph_scores], dim=-1)
-        tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
-        combiner_input = torch.stack([tower_B_scores, path_gates], dim=-1)
-        combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoGate(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.triplet_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.relation_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.combiner_mlp = nn.Sequential(nn.Linear(2, hidden_size // 2), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        triplet_centric_input = torch.cat([triplet_embeds, triplet_attended, question_expanded, graph_scores], dim=-1)
-        tower_A_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
-        relation_centric_input = torch.cat([relation_embeds, relation_attended, question_expanded, graph_scores], dim=-1)
-        tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
-        combiner_input = torch.stack([tower_A_scores, tower_B_scores], dim=-1)
-        combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoRA(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_triplet_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.triplet_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        triplet_attended, _ = self.question_triplet_attention(triplet_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        triplet_centric_input = torch.cat([triplet_embeds, triplet_attended, question_expanded, graph_scores], dim=-1)
-        combined_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-class PathRankingModelNoTA(nn.Module):
-    def __init__(self, hidden_size=384, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.hidden_size = hidden_size
-        self.question_relation_attention = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=8, batch_first=True, dropout=0.1)
-        self.relation_mlp = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.LayerNorm(hidden_size), nn.ReLU(), nn.Dropout(0.1), nn.Linear(hidden_size, hidden_size // 2), nn.ReLU(), nn.Linear(hidden_size // 2, 1))
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-        self.baseline = nn.Parameter(torch.zeros(1))
-
-    def forward(self, question_embed, triplet_embeds, relation_embeds, graph_scores):
-        num_triplets = triplet_embeds.size(0)
-        question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
-        relation_attended, _ = self.question_relation_attention(relation_embeds, question_embed, question_embed)
-        question_expanded = question_embed.expand(num_triplets, -1)
-        relation_centric_input = torch.cat([relation_embeds, relation_attended, question_expanded, graph_scores], dim=-1)
-        combined_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
-        temp = self.temperature.clamp(min=0.1, max=5.0)
-        path_probs = F.softmax(combined_scores / temp, dim=0)
-        return combined_scores, path_probs
-
-    def sample_paths(self, probabilities, paths, k, ranking_scores):
-        return _sample_paths_impl(probabilities, paths, k, ranking_scores)
-
-
-# ============================================================================
-# VARIANT → MODEL CLASS MAPPING
-# ============================================================================
-
-MODEL_CLASS_MAP = {
-    "no-ppr": PathRankingModelNoPPR,
-    "no-rt": PathRankingModelNoRT,
-    "no-tt": PathRankingModelNoTT,
-    "no-gate": PathRankingModelNoGate,
-    "no-ra": PathRankingModelNoRA,
-    "no-ta": PathRankingModelNoTA,
-}
-
-# All reward ablations use the original model
-REWARD_MODEL_CLASS = PathRankingModelOriginal
 
 
 # ============================================================================
@@ -390,10 +143,12 @@ def _find_last_checkpoint(train_dir: str) -> Optional[str]:
             checkpoints.append(full_path)
     if not checkpoints:
         return None
+
     def get_epoch(path):
         name = os.path.basename(path)
         match = re.search(r'epoch_(\d+)', name)
         return int(match.group(1)) if match else 0
+
     checkpoints.sort(key=get_epoch, reverse=True)
     return checkpoints[0]
 
@@ -473,7 +228,7 @@ def evaluate_coverage(test_dataloader, model, device, top_k):
                 "num_selected_triplets": len(selected_triplets)
             })
 
-        except Exception as e:
+        except Exception:
             continue
 
     # Aggregate
@@ -555,7 +310,15 @@ def main():
         # Load model
         model = model_class(device=device_str)
         state = torch.load(ckpt_path, weights_only=False, map_location="cpu")
-        model.load_state_dict(state, strict=False)
+        # The checkpoint is a dict of sub-module state dicts (not a flat model state_dict)
+        # Load each component individually
+        for key, value in state.items():
+            if key in ('temperature', 'baseline'):
+                getattr(model, key).data = value
+            elif hasattr(model, key):
+                getattr(model, key).load_state_dict(value)
+            else:
+                logger.warning(f"  Unexpected key in checkpoint: '{key}' (model {model_class.__name__} has no such attribute)")
         model.to(device_str)
         model.eval()
 
