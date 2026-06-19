@@ -109,8 +109,9 @@ def main():
                         help="Specific experiments to run (depends on --mode)")
     args = parser.parse_args()
 
-    # Setup logging - all output goes to ablation_log.txt + stdout
-    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ablation_log.txt")
+    # Setup logging - all output goes to logs/ablation.log + stdout
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "ablation.log")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logger = setup_logging(log_file)
 
     # Validate dataset paths

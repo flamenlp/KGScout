@@ -70,11 +70,16 @@ __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 # ============================================================================
 # LOGGING
 # ============================================================================
+# Project root is three levels up from this file (src/analysis/script.py)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+
 logger = logging.getLogger("hop_distribution_analysis")
 
 
-def setup_logging(log_file: Optional[str] = None):
-    """Configure logging to console and optionally to file."""
+def setup_logging(log_file: str):
+    """Configure logging to console and to file."""
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
     formatter = logging.Formatter(
@@ -86,11 +91,10 @@ def setup_logging(log_file: Optional[str] = None):
     sh.setFormatter(formatter)
     logger.addHandler(sh)
 
-    if log_file:
-        fh = logging.FileHandler(log_file, mode="w")
-        fh.setLevel(logging.INFO)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
+    fh = logging.FileHandler(log_file, mode="w")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
 
 
 # ============================================================================
@@ -566,13 +570,13 @@ Examples:
         "--log-file",
         type=str,
         default=None,
-        help="Optional log file path"
+        help="Optional log file path (default: logs/hop_analysis.log in project root)"
     )
 
     args = parser.parse_args()
 
-    # Setup logging
-    log_file = args.log_file or os.path.join(args.output_dir, "hop_analysis.log")
+    # Setup logging - always log to project root logs/ directory
+    log_file = args.log_file or os.path.join(LOGS_DIR, "hop_analysis.log")
     os.makedirs(args.output_dir, exist_ok=True)
     setup_logging(log_file)
 

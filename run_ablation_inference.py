@@ -38,7 +38,7 @@ MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 MODEL_ABLATION_DIR = "./results/model-ablation"
 REWARD_ABLATION_DIR = "./results/reward-ablation"
 TOP_K = 100
-LOG_FILE = "ablation_inference_log.txt"
+LOG_FILE = os.path.join("logs", "ablation_inference.log")
 
 MODEL_VARIANTS = ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
 REWARD_VARIANTS = ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
@@ -422,6 +422,7 @@ def main():
     args = parser.parse_args()
 
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOG_FILE)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     setup_logging(log_file)
 
     start_time = time.time()

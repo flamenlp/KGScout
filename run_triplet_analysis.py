@@ -58,7 +58,7 @@ REWARD_ABLATION_DIR = "./results/reward-ablation"
 TEST_DATASET_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
 TOP_K = 100
 SAMPLE_K = 1000  # number of triplets to feed to model
-LOG_FILE = "ablation_triplet_analysis_log.txt"
+LOG_FILE = os.path.join("logs", "triplet_analysis.log")
 
 MODEL_VARIANTS = ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
 REWARD_VARIANTS = ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
@@ -256,6 +256,7 @@ def main():
     args = parser.parse_args()
 
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOG_FILE)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     setup_logging(log_file)
 
     start_time = time.time()
