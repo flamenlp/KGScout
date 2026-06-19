@@ -9,7 +9,7 @@ import pickle
 import torch
 from typing import Dict, Any
 
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 
 
 class PreprocessService:

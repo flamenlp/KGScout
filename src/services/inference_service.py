@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from typing import Dict, Any, List
 
 from src.model.path_ranker import PathRankingModel
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 from src.inference.predictor import Predictor
 
 

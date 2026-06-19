@@ -31,7 +31,7 @@ from transformers import get_cosine_schedule_with_warmup
 
 # Required for torch.load() to unpickle datasets saved from notebooks
 # The .pt files were saved with the class in __main__, so we register it here
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 import __main__
 __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 

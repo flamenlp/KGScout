@@ -63,7 +63,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Required for torch.load() to unpickle datasets saved from notebooks
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 import __main__
 __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 

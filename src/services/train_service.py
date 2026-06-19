@@ -12,9 +12,9 @@ from torch.utils.data import DataLoader
 from typing import Dict, Any, Optional
 
 from src.model.path_ranker import PathRankingModel
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
-from preprocess.pretrain_dataset import CosinePretrainingDataset
-from preprocess.sampled_dataset import SampledJointTrainingDataset
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.pretrain_dataset import CosinePretrainingDataset
+from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.training.pretrainer import Pretrainer
 from src.training.trainer import Trainer
 from src.training.monitor import TrainingMonitor
