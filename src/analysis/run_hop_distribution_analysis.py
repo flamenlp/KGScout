@@ -60,7 +60,7 @@ import numpy as np
 from tqdm import tqdm
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Required for torch.load() to unpickle datasets saved from notebooks
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
