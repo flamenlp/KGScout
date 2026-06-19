@@ -15,10 +15,10 @@ import torch
 from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
 
-from utils.evaluation_utils import load_dataset, load_model_checkpoint
-from utils.triplet_selector import select_triplets_kgscout, select_triplets_cosine
-from utils.llm_inference import load_llm_model, format_prompt, run_llm_inference
-from utils.metrics import (
+from src.utils.evaluation_utils import load_dataset, load_model_checkpoint
+from src.utils.triplet_selector import select_triplets_kgscout, select_triplets_cosine
+from src.utils.llm_inference import load_llm_model, format_prompt, run_llm_inference
+from src.utils.metrics import (
     extract_predictions_from_response,
     compute_hit_score,
     compute_hit_at_1,

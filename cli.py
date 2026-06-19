@@ -141,7 +141,7 @@ def run_preprocess_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.preprocess_service import PreprocessService
+    from src.services.preprocess_service import PreprocessService
     
     # Validate input file exists
     validate_file_exists(args.input, "Input data file")
@@ -181,7 +181,7 @@ def run_train_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.train_service import TrainService
+    from src.services.train_service import TrainService
     
     # Validate input files exist
     validate_file_exists(args.train_data, "Training data file")
@@ -237,7 +237,7 @@ def run_inference_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.inference_service import InferenceService
+    from src.services.inference_service import InferenceService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -284,7 +284,7 @@ def run_evaluate_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.evaluate_service import EvaluateService
+    from src.services.evaluate_service import EvaluateService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -326,7 +326,7 @@ def run_llm_comparison_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.llm_comparison_service import LLMComparisonService
+    from src.services.llm_comparison_service import LLMComparisonService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -406,7 +406,7 @@ def run_k_ablation_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.k_ablation_service import KAblationService
+    from src.services.k_ablation_service import KAblationService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -474,7 +474,7 @@ def run_coverage_analysis_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.coverage_analysis_service import CoverageAnalysisService
+    from src.services.coverage_analysis_service import CoverageAnalysisService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -545,7 +545,7 @@ def run_statistical_analysis_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.statistical_analysis_service import StatisticalAnalysisService
+    from src.services.statistical_analysis_service import StatisticalAnalysisService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:

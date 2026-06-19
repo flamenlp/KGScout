@@ -11,7 +11,7 @@ import os
 import torch
 from typing import List, Tuple, Dict, Any
 from tqdm import tqdm
-from model.path_ranker import PathRankingModel
+from src.model.path_ranker import PathRankingModel
 
 
 def select_triplets_kgscout(

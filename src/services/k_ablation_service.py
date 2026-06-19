@@ -13,7 +13,7 @@ import json
 from typing import List, Dict, Any
 from datetime import datetime
 
-from services.llm_comparison_service import LLMComparisonService
+from src.services.llm_comparison_service import LLMComparisonService
 
 
 class KAblationService:

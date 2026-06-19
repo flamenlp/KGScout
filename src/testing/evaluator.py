@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import networkx as nx
 
-from training.rewards import compute_reward_v8
+from src.training.rewards import compute_reward_v8
 
 
 class Evaluator:

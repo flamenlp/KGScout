@@ -12,7 +12,7 @@ import logging
 from typing import List, Tuple, Dict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from training.rewards import compute_reward_v8
+from src.training.rewards import compute_reward_v8
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

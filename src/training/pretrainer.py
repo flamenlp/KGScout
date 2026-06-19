@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 import numpy as np
 
-from training.checkpoint_utils import validate_checkpoint_structure
+from src.training.checkpoint_utils import validate_checkpoint_structure
 
 
 class Pretrainer:

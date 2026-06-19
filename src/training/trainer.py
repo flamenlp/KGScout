@@ -12,9 +12,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from training.rewards import compute_reward_v8
-from training.monitor import TrainingMonitor
-from training.checkpoint_utils import validate_checkpoint_structure
+from src.training.rewards import compute_reward_v8
+from src.training.monitor import TrainingMonitor
+from src.training.checkpoint_utils import validate_checkpoint_structure
 
 
 class Trainer:

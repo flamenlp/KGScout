@@ -11,10 +11,10 @@ import torch
 from torch.utils.data import DataLoader
 from typing import Dict, Any
 
-from model.path_ranker import PathRankingModel
+from src.model.path_ranker import PathRankingModel
 from preprocess.joint_dataset import JointTrainingDatasetv3PPR
-from testing.evaluator import Evaluator
-from training.trainer import Trainer
+from src.testing.evaluator import Evaluator
+from src.training.trainer import Trainer
 
 
 class EvaluateService:

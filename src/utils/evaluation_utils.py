@@ -13,7 +13,7 @@ import json
 import torch
 from datetime import datetime
 from typing import List, Dict, Any
-from model.path_ranker import PathRankingModel
+from src.model.path_ranker import PathRankingModel
 
 
 def load_dataset(dataset_name: str) -> List[Dict]:

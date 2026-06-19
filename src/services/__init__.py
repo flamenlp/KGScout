@@ -5,10 +5,10 @@ This module provides service classes that encapsulate the business logic
 for each CLI command, separating concerns from the CLI interface.
 """
 
-from services.preprocess_service import PreprocessService
-from services.train_service import TrainService
-from services.inference_service import InferenceService
-from services.evaluate_service import EvaluateService
+from src.services.preprocess_service import PreprocessService
+from src.services.train_service import TrainService
+from src.services.inference_service import InferenceService
+from src.services.evaluate_service import EvaluateService
 
 __all__ = [
     'PreprocessService',

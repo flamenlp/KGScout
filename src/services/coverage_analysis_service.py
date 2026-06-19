@@ -14,9 +14,9 @@ from typing import List, Dict, Any, Tuple
 from datetime import datetime
 from tqdm import tqdm
 
-from utils.evaluation_utils import load_dataset, load_model_checkpoint
-from utils.triplet_selector import select_triplets_kgscout, select_triplets_cosine
-from utils.metrics import compute_answer_coverage, compute_path_coverage
+from src.utils.evaluation_utils import load_dataset, load_model_checkpoint
+from src.utils.triplet_selector import select_triplets_kgscout, select_triplets_cosine
+from src.utils.metrics import compute_answer_coverage, compute_path_coverage
 
 
 class CoverageAnalysisService:
