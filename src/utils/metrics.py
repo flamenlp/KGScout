@@ -300,7 +300,7 @@ def compute_answer_coverage(
     """
     Compute answer coverage metric.
     
-    Answer coverage is True if all answer entities appear in the selected triplets
+    Answer coverage is True if any answer entity appears in the selected triplets
     (either as subject or object).
     
     Args:
@@ -308,7 +308,7 @@ def compute_answer_coverage(
         answer_entities: List of answer entity strings
     
     Returns:
-        True if all answer entities are covered, False otherwise
+        True if any answer entity is found in the triplets, False otherwise
     
     Requirements:
         - 3.3: Check if answer entities exist in the selected triplets for each question
@@ -316,18 +316,12 @@ def compute_answer_coverage(
     if not answer_entities:
         return False
     
-    # Build set of entities in triplets (lowercase for matching)
-    entities_in_triplets = set()
-    for s, r, o in triplets:
-        entities_in_triplets.add(s.lower())
-        entities_in_triplets.add(o.lower())
-    
-    # Check if all answer entities are present
-    for answer_entity in answer_entities:
-        if answer_entity.lower() not in entities_in_triplets:
-            return False
-    
-    return True
+    # Check if any answer entity is present in any triplet
+    return any(
+        ent.lower() in {s.lower(), o.lower()}
+        for ent in answer_entities
+        for s, _, o in triplets
+    )
 
 
 def compute_path_coverage(
@@ -339,7 +333,8 @@ def compute_path_coverage(
     Compute path coverage metric.
     
     Path coverage is True if there exists a directed path in the triplet graph
-    from at least one question entity to at least one answer entity.
+    from at least one question entity to at least one answer entity, checking
+    both forward (q→a) and backward (a→q) directions.
     
     Args:
         triplets: List of (subject, relation, object) tuples
@@ -347,7 +342,7 @@ def compute_path_coverage(
         answer_entities: List of answer entity strings
     
     Returns:
-        True if a complete reasoning path exists, False otherwise
+        True if a reasoning path exists in either direction, False otherwise
     
     Requirements:
         - 3.4: Check if a complete Reasoning_Path exists in the selected triplets for each question
@@ -360,18 +355,26 @@ def compute_path_coverage(
     for s, r, o in triplets:
         G.add_edge(s.lower(), o.lower(), relation=r.lower())
     
-    # Check if any path exists from any question entity to any answer entity
+    # Check forward direction: q_entity → a_entity
     for q_entity in question_entities:
         for a_entity in answer_entities:
             qn, an = q_entity.lower(), a_entity.lower()
-            
-            # Check if both nodes exist in graph
             if qn not in G or an not in G:
                 continue
-            
-            # Check if path exists
             try:
                 if nx.has_path(G, qn, an):
+                    return True
+            except nx.NetworkXError:
+                continue
+    
+    # Check backward direction: a_entity → q_entity
+    for a_entity in answer_entities:
+        for q_entity in question_entities:
+            an, qn = a_entity.lower(), q_entity.lower()
+            if an not in G or qn not in G:
+                continue
+            try:
+                if nx.has_path(G, an, qn):
                     return True
             except nx.NetworkXError:
                 continue

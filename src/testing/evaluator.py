@@ -153,15 +153,15 @@ class Evaluator:
         """
         Compute answer coverage metric.
         
-        Answer coverage is the fraction of answer entities that appear
-        in the selected triplets (either as subject or object).
+        Answer coverage returns 1.0 if any answer entity appears in
+        the selected triplets (either as subject or object), 0.0 otherwise.
         
         Args:
             selected_triplets: List of (subject, relation, object) tuples
             a_entities: List of answer entity strings
         
         Returns:
-            Answer coverage score in range [0.0, 1.0]
+            1.0 if any answer entity is present, 0.0 otherwise
         
         Requirements:
             - 5.2: Compute answer coverage metrics during evaluation
@@ -169,20 +169,14 @@ class Evaluator:
         if not a_entities:
             return 0.0
         
-        # Build set of entities in selected triplets (lowercase for matching)
-        entities_in_triplets = set()
-        for s, r, o in selected_triplets:
-            entities_in_triplets.add(s.lower())
-            entities_in_triplets.add(o.lower())
+        # Check if any answer entity is present in any triplet
+        for a in a_entities:
+            a_lower = a.lower()
+            for s, r, o in selected_triplets:
+                if a_lower == s.lower() or a_lower == o.lower():
+                    return 1.0
         
-        # Count how many answer entities are present
-        present_count = sum(
-            1 for a in a_entities
-            if a.lower() in entities_in_triplets
-        )
-        
-        # Return fraction of answer entities present
-        return present_count / len(a_entities)
+        return 0.0
     
     def _compute_path_coverage(
         self,
@@ -193,8 +187,9 @@ class Evaluator:
         """
         Compute path coverage metric.
         
-        Path coverage is the fraction of shortest path edges (between question
-        and answer entities) that are covered by the selected triplets.
+        Path coverage returns 1.0 if a path exists between any question entity
+        and any answer entity in either direction (forward or backward) on
+        a directed graph built from selected triplets.
         
         Args:
             selected_triplets: List of (subject, relation, object) tuples
@@ -202,7 +197,7 @@ class Evaluator:
             a_entities: List of answer entity strings
         
         Returns:
-            Path coverage score in range [0.0, 1.0]
+            1.0 if a reasoning path exists in either direction, 0.0 otherwise
         
         Requirements:
             - 5.3: Compute path coverage metrics during evaluation
@@ -215,37 +210,28 @@ class Evaluator:
         for s, r, o in selected_triplets:
             G.add_edge(s.lower(), o.lower(), relation=r.lower())
         
-        # Build set of edges in selected triplets
-        triplet_edges = {
-            (s.lower(), o.lower())
-            for s, r, o in selected_triplets
-        }
-        
-        # Compute path coverage for each Q-A pair
-        coverage_scores = []
+        # Check forward direction: q_entity → a_entity
         for q in q_entities:
             for a in a_entities:
                 qn, an = q.lower(), a.lower()
-                
+                if qn not in G or an not in G:
+                    continue
                 try:
-                    # Find shortest path
-                    path = nx.shortest_path(G, qn, an)
-                except (nx.NetworkXNoPath, nx.NodeNotFound):
-                    # No path exists
+                    if nx.has_path(G, qn, an):
+                        return 1.0
+                except nx.NetworkXError:
                     continue
-                
-                if len(path) < 2:
-                    # Path too short (no edges)
-                    continue
-                
-                # Count how many edges in the path are in our selected triplets
-                path_edges = [(path[i], path[i+1]) for i in range(len(path) - 1)]
-                matches = sum(1 for edge in path_edges if edge in triplet_edges)
-                
-                # Compute coverage for this path
-                coverage = matches / len(path_edges)
-                coverage_scores.append(coverage)
         
-        # Return maximum coverage across all Q-A pairs
-        # (same as compute_reward_v8 implementation)
-        return max(coverage_scores) if coverage_scores else 0.0
+        # Check backward direction: a_entity → q_entity
+        for a in a_entities:
+            for q in q_entities:
+                an, qn = a.lower(), q.lower()
+                if an not in G or qn not in G:
+                    continue
+                try:
+                    if nx.has_path(G, an, qn):
+                        return 1.0
+                except nx.NetworkXError:
+                    continue
+        
+        return 0.0
