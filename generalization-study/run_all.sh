@@ -47,33 +47,45 @@ echo "============================================================"
 
 echo ""
 echo "--- Preprocessing 1-hop ---"
-python generalization-study/preprocess_metaqa.py \
-    --kb-path "$KB_PATH" \
-    --qa-path "$QA_1HOP" \
-    --output-dir "$PROCESSED_DIR" \
-    --hop 1 \
-    --max-triplets "$MAX_TRIPLETS" \
-    --embedding-model "$EMBEDDING_MODEL"
+if [ -f "$PROCESSED_DIR/metaqa-1hop-test.pt" ]; then
+    echo "Already exists: $PROCESSED_DIR/metaqa-1hop-test.pt — skipping."
+else
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path "$KB_PATH" \
+        --qa-path "$QA_1HOP" \
+        --output-dir "$PROCESSED_DIR" \
+        --hop 1 \
+        --max-triplets "$MAX_TRIPLETS" \
+        --embedding-model "$EMBEDDING_MODEL"
+fi
 
 echo ""
 echo "--- Preprocessing 2-hop ---"
-python generalization-study/preprocess_metaqa.py \
-    --kb-path "$KB_PATH" \
-    --qa-path "$QA_2HOP" \
-    --output-dir "$PROCESSED_DIR" \
-    --hop 2 \
-    --max-triplets "$MAX_TRIPLETS" \
-    --embedding-model "$EMBEDDING_MODEL"
+if [ -f "$PROCESSED_DIR/metaqa-2hop-test.pt" ]; then
+    echo "Already exists: $PROCESSED_DIR/metaqa-2hop-test.pt — skipping."
+else
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path "$KB_PATH" \
+        --qa-path "$QA_2HOP" \
+        --output-dir "$PROCESSED_DIR" \
+        --hop 2 \
+        --max-triplets "$MAX_TRIPLETS" \
+        --embedding-model "$EMBEDDING_MODEL"
+fi
 
 echo ""
 echo "--- Preprocessing 3-hop ---"
-python generalization-study/preprocess_metaqa.py \
-    --kb-path "$KB_PATH" \
-    --qa-path "$QA_3HOP" \
-    --output-dir "$PROCESSED_DIR" \
-    --hop 3 \
-    --max-triplets "$MAX_TRIPLETS" \
-    --embedding-model "$EMBEDDING_MODEL"
+if [ -f "$PROCESSED_DIR/metaqa-3hop-test.pt" ]; then
+    echo "Already exists: $PROCESSED_DIR/metaqa-3hop-test.pt — skipping."
+else
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path "$KB_PATH" \
+        --qa-path "$QA_3HOP" \
+        --output-dir "$PROCESSED_DIR" \
+        --hop 3 \
+        --max-triplets "$MAX_TRIPLETS" \
+        --embedding-model "$EMBEDDING_MODEL"
+fi
 
 # =============================================================================
 # STEP 2: Coverage-only evaluation (fast, no LLM needed)
