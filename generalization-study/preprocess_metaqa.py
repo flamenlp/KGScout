@@ -139,8 +139,20 @@ def extract_subgraph_triplets(
     visited_nodes.update(frontier)
 
     # Collect all triplets that involve visited nodes
+    # Prioritize topic entity's direct triplets first to ensure they're not cut off
     seen_triplets = set()
     triplets = []
+
+    # First: add triplets directly involving topic entities
+    for entity in topic_entities:
+        e_lower = entity.lower()
+        for triplet in entity_to_triplets.get(e_lower, []):
+            triplet_key = (triplet[0].lower(), triplet[1].lower(), triplet[2].lower())
+            if triplet_key not in seen_triplets:
+                seen_triplets.add(triplet_key)
+                triplets.append(triplet)
+
+    # Then: add remaining triplets from other visited nodes
     for node in visited_nodes:
         for triplet in entity_to_triplets.get(node, []):
             triplet_key = (triplet[0].lower(), triplet[1].lower(), triplet[2].lower())
@@ -218,8 +230,10 @@ def preprocess_metaqa(
             skipped += 1
             continue
 
-        # Linearize triplets: "subject, relation, object"
-        linearized = [f"{s}, {r}, {o}" for s, r, o in triplets]
+        # Linearize triplets: "subject relation object" (replace underscores in relations)
+        linearized = [
+            f"{s} {r.replace('_', ' ')} {o}" for s, r, o in triplets
+        ]
 
         # Compute question embedding
         question_embedding = embed_model.encode(
