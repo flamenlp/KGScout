@@ -90,6 +90,11 @@ def select_triplets_with_kgscout(
     """
     Use KGScout model to re-rank triplets and select top-k.
 
+    Logic (matches notebook Architecture-v8):
+    1. Forward pass → ranking_scores, path_probs
+    2. sample_paths(path_probs, paths, top_k, ranking_scores) → stochastic selection
+    3. Sort selected paths by selected_probs descending
+
     Returns:
         linearized: List of linearized triplet strings (for LLM prompt)
         structured: List of (s, r, o) tuples (for metrics)
@@ -120,17 +125,36 @@ def select_triplets_with_kgscout(
     k = min(top_k, num_available)
 
     with torch.no_grad():
-        ranking_scores, _ = model(
+        ranking_scores, path_probs = model(
             question_embed, triplet_embeds, relation_embeds, graph_features
         )
 
-    # Select top-k by ranking scores
-    top_k_indices = torch.topk(ranking_scores.squeeze(), k).indices.cpu().tolist()
+    # Step 2: sample_paths (stochastic selection, same as notebook)
+    selected_paths, selected_probs, selected_ranking_scores, log_probs = model.sample_paths(
+        path_probs, triplets_linearized, k, ranking_scores
+    )
 
-    selected_linearized = [triplets_linearized[i] for i in top_k_indices]
-    selected_structured = [triplets_structured[i] for i in top_k_indices]
+    # Step 3: Sort selected paths by probability (descending)
+    sorted_indices = torch.argsort(selected_probs, descending=True)
+    sorted_linearized = [selected_paths[i] for i in sorted_indices.tolist()]
 
-    return selected_linearized, selected_structured
+    # Also select corresponding structured triplets in same order
+    # We need to map linearized back to structured
+    # Since triplets_linearized and triplets_structured are aligned by index,
+    # find the original indices of the sampled paths
+    linearized_to_idx = {path: i for i, path in enumerate(triplets_linearized)}
+    sorted_structured = []
+    for path in sorted_linearized:
+        orig_idx = linearized_to_idx.get(path)
+        if orig_idx is not None:
+            sorted_structured.append(triplets_structured[orig_idx])
+        else:
+            # Fallback: parse from linearized string "s, r, o"
+            parts = path.split(", ", 2)
+            if len(parts) == 3:
+                sorted_structured.append(tuple(parts))
+
+    return sorted_linearized, sorted_structured
 
 
 def run_evaluation_for_hop(

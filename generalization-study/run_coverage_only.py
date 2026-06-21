@@ -40,7 +40,7 @@ def load_kgscout_model(model_path: str, device: str) -> PathRankingModel:
 
 
 def select_top_k(model, sample, top_k, device):
-    """Select top-k triplets using KGScout ranking."""
+    """Select top-k triplets using KGScout ranking (sample_paths + sort by prob)."""
     question_embed = sample["question_embedding"].to(device)
     triplet_embeds = sample["topk_linearized_triplet_embeddings"].to(device)
     relation_embeds = sample["topK_rel_embeddings"].to(device)
@@ -56,14 +56,22 @@ def select_top_k(model, sample, top_k, device):
         graph_features = graph_features.squeeze(0)
 
     triplets = [t[1] for t in sample["topk_rel_data"]]
+    triplets_linearized = sample["topk_linearized_triplets"]
     if len(triplets) == 0:
         return []
 
     k = min(top_k, len(triplets))
     with torch.no_grad():
-        scores, _ = model(question_embed, triplet_embeds, relation_embeds, graph_features)
-    top_k_indices = torch.topk(scores.squeeze(), k).indices.cpu().tolist()
-    return [triplets[i] for i in top_k_indices]
+        ranking_scores, path_probs = model(
+            question_embed, triplet_embeds, relation_embeds, graph_features
+        )
+
+    # sample_paths (stochastic) then sort by probability - matches notebook
+    selected_paths, selected_probs, _, _ = model.sample_paths(
+        path_probs, triplets, k, ranking_scores
+    )
+    sorted_indices = torch.argsort(selected_probs, descending=True)
+    return [selected_paths[i] for i in sorted_indices.tolist()]
 
 
 def run_coverage_evaluation(model, dataset, hop, top_k, device, output_dir):
