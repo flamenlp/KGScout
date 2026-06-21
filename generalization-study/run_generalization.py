@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import time
+import logging
 import argparse
 import torch
 import numpy as np
@@ -39,6 +40,8 @@ from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logger = logging.getLogger("generalization")
 
 from src.model.path_ranker import PathRankingModel
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
@@ -57,10 +60,10 @@ from src.utils.metrics import (
 
 def load_kgscout_model(model_path: str, device: str) -> PathRankingModel:
     """Load a trained KGScout model from checkpoint directory."""
-    print(f"Loading KGScout model from: {model_path}")
+    logger.info(f"Loading KGScout model from: {model_path}")
     model = PathRankingModel.from_pretrained(model_path, device=device)
     model.eval()
-    print(f"Model loaded. Hidden size: {model.hidden_size}")
+    logger.info(f"Model loaded. Hidden size: {model.hidden_size}")
     return model
 
 
@@ -69,14 +72,19 @@ def load_metaqa_data(data_path: str, device: str) -> List[Dict]:
     Load preprocessed MetaQA .pt file and compute PPR features.
     Returns list of samples with graph_features added.
     """
-    print(f"Loading preprocessed MetaQA data: {data_path}")
+    logger.info(f"Loading preprocessed MetaQA data: {data_path}")
     raw_data = torch.load(data_path, map_location="cpu", weights_only=False)
-    print(f"Loaded {len(raw_data)} samples")
+    logger.info(f"Loaded {len(raw_data)} samples")
 
     # Use JointTrainingDatasetv3PPR to compute PPR graph features
-    print("Computing PPR graph features...")
+    logger.info("Computing PPR graph features...")
     dataset = JointTrainingDatasetv3PPR(raw_data, device="cpu")
-    print(f"PPR computed. Final dataset size: {len(dataset)}")
+    logger.info(f"PPR computed. Final dataset size: {len(dataset)}")
+
+    # Free raw data (PPR dataset holds its own copy)
+    del raw_data
+    import gc
+    gc.collect()
 
     return dataset
 
@@ -171,9 +179,9 @@ def run_evaluation_for_hop(
     """
     Run full evaluation pipeline for a single hop.
     """
-    print(f"\n{'=' * 60}")
-    print(f"EVALUATING {hop}-HOP ({len(dataset)} questions)")
-    print(f"{'=' * 60}")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"EVALUATING {hop}-HOP ({len(dataset)} questions)")
+    logger.info(f"{'=' * 60}")
 
     results = []
     total_hit = 0.0
@@ -290,18 +298,18 @@ def run_evaluation_for_hop(
                 f.write('\n')
 
     # Print summary
-    print(f"\n{'─' * 40}")
-    print(f"Results for MetaQA {hop}-hop:")
-    print(f"  Total Questions: {n}")
-    print(f"  Hit:             {metrics['hit']:.4f}")
-    print(f"  Hit@1:           {metrics['hit_at_1']:.4f}")
-    print(f"  Macro F1:        {metrics['macro_f1']:.4f}")
-    print(f"  Macro Precision: {metrics['macro_precision']:.4f}")
-    print(f"  Macro Recall:    {metrics['macro_recall']:.4f}")
-    print(f"  Exact Match:     {metrics['exact_match']:.4f}")
-    print(f"  Failed LLM:      {failed_llm}")
-    print(f"  Saved to:        {hop_dir}")
-    print(f"{'─' * 40}")
+    logger.info(f"{'─' * 40}")
+    logger.info(f"Results for MetaQA {hop}-hop:")
+    logger.info(f"  Total Questions: {n}")
+    logger.info(f"  Hit:             {metrics['hit']:.4f}")
+    logger.info(f"  Hit@1:           {metrics['hit_at_1']:.4f}")
+    logger.info(f"  Macro F1:        {metrics['macro_f1']:.4f}")
+    logger.info(f"  Macro Precision: {metrics['macro_precision']:.4f}")
+    logger.info(f"  Macro Recall:    {metrics['macro_recall']:.4f}")
+    logger.info(f"  Exact Match:     {metrics['exact_match']:.4f}")
+    logger.info(f"  Failed LLM:      {failed_llm}")
+    logger.info(f"  Saved to:        {hop_dir}")
+    logger.info(f"{'─' * 40}")
 
     return metrics
 
@@ -331,8 +339,26 @@ def main():
     if args.hop is None and not args.all_hops:
         parser.error("Must specify --hop or --all-hops")
 
+    # Setup logging (file + stdout, same pattern as run_ablation.py)
+    log_file = os.path.join(args.output_dir, "generalization_log.txt")
+    os.makedirs(args.output_dir, exist_ok=True)
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    fh = logging.FileHandler(log_file, mode="a")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
+    logger.info(f"Device: {device}")
 
     # Determine which hops to run
     hops_to_run = [1, 2, 3] if args.all_hops else [args.hop]
@@ -341,7 +367,7 @@ def main():
     model = load_kgscout_model(args.model_path, device)
 
     # Load LLM (once, reuse for all hops)
-    print(f"\nLoading LLM: {args.llm_model}")
+    logger.info(f"Loading LLM: {args.llm_model}")
     llm_model, tokenizer = load_llm_model(args.llm_model, device)
 
     # Run evaluation for each hop
@@ -349,8 +375,8 @@ def main():
     for hop in hops_to_run:
         data_path = os.path.join(args.data_dir, f"metaqa-{hop}hop-test.pt")
         if not os.path.exists(data_path):
-            print(f"\nWARNING: Preprocessed data not found: {data_path}")
-            print(f"Run preprocess_metaqa.py first for {hop}-hop data.")
+            logger.warning(f"Preprocessed data not found: {data_path}")
+            logger.warning(f"Run preprocess_metaqa.py first for {hop}-hop data.")
             continue
 
         dataset = load_metaqa_data(data_path, device)
@@ -367,18 +393,25 @@ def main():
         )
         all_metrics[f"{hop}-hop"] = metrics
 
-    # Print overall summary
+        # Clear dataset from memory after each hop
+        del dataset
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info(f"Memory cleared after {hop}-hop evaluation.")
+
     if len(all_metrics) > 1:
-        print(f"\n{'=' * 60}")
-        print(f"OVERALL GENERALIZATION RESULTS ({args.dataset_name} → MetaQA)")
-        print(f"{'=' * 60}")
-        print(f"{'Hop':<8}{'Hit':<10}{'Hit@1':<10}{'F1':<10}{'Prec':<10}{'Recall':<10}{'EM':<10}")
-        print(f"{'─' * 58}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"OVERALL GENERALIZATION RESULTS ({args.dataset_name} → MetaQA)")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"{'Hop':<8}{'Hit':<10}{'Hit@1':<10}{'F1':<10}{'Prec':<10}{'Recall':<10}{'EM':<10}")
+        logger.info(f"{'─' * 58}")
         for hop_name, m in all_metrics.items():
-            print(f"{hop_name:<8}{m['hit']:<10.4f}{m['hit_at_1']:<10.4f}"
-                  f"{m['macro_f1']:<10.4f}{m['macro_precision']:<10.4f}"
-                  f"{m['macro_recall']:<10.4f}{m['exact_match']:<10.4f}")
-        print(f"{'=' * 60}")
+            logger.info(f"{hop_name:<8}{m['hit']:<10.4f}{m['hit_at_1']:<10.4f}"
+                        f"{m['macro_f1']:<10.4f}{m['macro_precision']:<10.4f}"
+                        f"{m['macro_recall']:<10.4f}{m['exact_match']:<10.4f}")
+        logger.info(f"{'=' * 60}")
 
         # Save combined summary
         combined_path = os.path.join(args.output_dir, f"{args.dataset_name}-metaqa-generalization-summary.json")
@@ -392,7 +425,7 @@ def main():
                 "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
                 "results": all_metrics
             }, f, indent=2)
-        print(f"Combined summary saved to: {combined_path}")
+        logger.info(f"Combined summary saved to: {combined_path}")
 
 
 if __name__ == "__main__":

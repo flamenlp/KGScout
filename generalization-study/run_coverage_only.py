@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import argparse
 import torch
 import networkx as nx
@@ -26,6 +27,8 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+logger = logging.getLogger("generalization.coverage")
+
 from src.model.path_ranker import PathRankingModel
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 from src.utils.metrics import compute_answer_coverage, compute_path_coverage
@@ -33,7 +36,7 @@ from src.utils.metrics import compute_answer_coverage, compute_path_coverage
 
 def load_kgscout_model(model_path: str, device: str) -> PathRankingModel:
     """Load trained KGScout model."""
-    print(f"Loading model from: {model_path}")
+    logger.info(f"Loading model from: {model_path}")
     model = PathRankingModel.from_pretrained(model_path, device=device)
     model.eval()
     return model
@@ -76,7 +79,7 @@ def select_top_k(model, sample, top_k, device):
 
 def run_coverage_evaluation(model, dataset, hop, top_k, device, output_dir):
     """Evaluate answer and path coverage for KGScout on a MetaQA hop."""
-    print(f"\nEvaluating coverage for {hop}-hop ({len(dataset)} samples)...")
+    logger.info(f"Evaluating coverage for {hop}-hop ({len(dataset)} samples)...")
 
     total_answer_cov = 0.0
     total_path_cov = 0.0
@@ -125,12 +128,12 @@ def run_coverage_evaluation(model, dataset, hop, top_k, device, output_dir):
         "total_evaluated": n_cos,
     }
 
-    print(f"\n  KGScout (top-{top_k}):")
-    print(f"    Answer Coverage: {metrics['answer_coverage']:.4f}")
-    print(f"    Path Coverage:   {metrics['path_coverage']:.4f}")
-    print(f"  Cosine Baseline (top-{top_k}):")
-    print(f"    Answer Coverage: {cosine_metrics['answer_coverage']:.4f}")
-    print(f"    Path Coverage:   {cosine_metrics['path_coverage']:.4f}")
+    logger.info(f"\n  KGScout (top-{top_k}):")
+    logger.info(f"    Answer Coverage: {metrics['answer_coverage']:.4f}")
+    logger.info(f"    Path Coverage:   {metrics['path_coverage']:.4f}")
+    logger.info(f"  Cosine Baseline (top-{top_k}):")
+    logger.info(f"    Answer Coverage: {cosine_metrics['answer_coverage']:.4f}")
+    logger.info(f"    Path Coverage:   {cosine_metrics['path_coverage']:.4f}")
 
     return {"kgscout": metrics, "cosine": cosine_metrics}
 
@@ -148,6 +151,24 @@ def main():
     if args.hop is None and not args.all_hops:
         parser.error("Must specify --hop or --all-hops")
 
+    # Setup logging
+    os.makedirs(args.output_dir, exist_ok=True)
+    log_file = os.path.join(args.output_dir, "coverage_log.txt")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    fh = logging.FileHandler(log_file, mode="a")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     hops = [1, 2, 3] if args.all_hops else [args.hop]
 
@@ -157,12 +178,21 @@ def main():
     for hop in hops:
         data_path = os.path.join(args.data_dir, f"metaqa-{hop}hop-test.pt")
         if not os.path.exists(data_path):
-            print(f"WARNING: {data_path} not found. Run preprocess_metaqa.py first.")
+            logger.warning(f"{data_path} not found. Run preprocess_metaqa.py first.")
             continue
         raw_data = torch.load(data_path, map_location="cpu", weights_only=False)
         dataset = JointTrainingDatasetv3PPR(raw_data, device="cpu")
+        del raw_data  # Free raw data immediately
         result = run_coverage_evaluation(model, dataset, hop, args.top_k, device, args.output_dir)
         all_results[f"{hop}-hop"] = result
+
+        # Clear memory after each hop
+        del dataset
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info(f"Memory cleared after {hop}-hop.")
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
@@ -174,7 +204,7 @@ def main():
             "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
             "results": all_results,
         }, f, indent=2)
-    print(f"\nResults saved to: {output_path}")
+    logger.info(f"Results saved to: {output_path}")
 
 
 if __name__ == "__main__":

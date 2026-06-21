@@ -8,7 +8,7 @@
 #   3. Run full evaluation with LLM (KGScout re-rank + Llama inference + metrics)
 # =============================================================================
 
-set -e  # Exit on error
+# Script continues on error so the terminal stays open
 
 # =============================================================================
 # CONFIGURATION - Update these paths to match your environment

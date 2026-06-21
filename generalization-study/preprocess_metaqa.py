@@ -273,12 +273,22 @@ def preprocess_metaqa(
     output_path = os.path.join(output_dir, f"metaqa-{hop}hop-test.pt")
     torch.save(processed_data, output_path)
 
+    num_processed = len(processed_data)
+
+    # Clear memory
+    del processed_data, graph, entity_to_triplets, samples, embed_model
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     print(f"\n{'=' * 60}")
     print(f"PREPROCESSING COMPLETE")
     print(f"{'=' * 60}")
-    print(f"Processed: {len(processed_data)} samples")
+    print(f"Processed: {num_processed} samples")
     print(f"Skipped (no triplets): {skipped}")
     print(f"Saved to: {output_path}")
+    print(f"Memory cleared.")
     print(f"{'=' * 60}")
 
     return output_path
