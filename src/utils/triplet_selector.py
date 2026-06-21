@@ -23,6 +23,11 @@ def select_triplets_kgscout(
     """
     Select top-k triplets using KGscout model.
     
+    Logic (matches notebook Architecture-v8):
+    1. Forward pass → ranking_scores, path_probs
+    2. sample_paths(path_probs, triplets, k, ranking_scores) → stochastic selection
+    3. Sort selected paths by selected_probs descending
+    
     Args:
         model: Trained PathRankingModel
         data_sample: Single dataset sample with embeddings and triplets
@@ -30,7 +35,7 @@ def select_triplets_kgscout(
         device: Device to run model on
     
     Returns:
-        List of (subject, relation, object) tuples
+        List of (subject, relation, object) tuples sorted by probability
     
     Requirements:
         - 10.1: Use the generate_selected_json method to select triplets when retriever-type is "kgscout"
@@ -49,7 +54,9 @@ def select_triplets_kgscout(
     if len(triplets) == 0:
         return []
     
-    # Forward pass to get ranking scores
+    k = min(k, len(triplets))
+    
+    # Forward pass to get ranking scores and probabilities
     with torch.no_grad():
         ranking_scores, path_probs = model(
             question_embed,
@@ -58,10 +65,14 @@ def select_triplets_kgscout(
             graph_features
         )
     
-    # Select top-k triplets based on ranking scores
-    k = min(k, len(triplets))
-    top_k_indices = torch.topk(ranking_scores.squeeze(), k).indices.cpu().tolist()
-    selected_triplets = [triplets[i] for i in top_k_indices]
+    # Step 2: sample_paths (stochastic selection, same as notebook)
+    selected_triplets, selected_probs, _, _ = model.sample_paths(
+        path_probs, triplets, k, ranking_scores
+    )
+    
+    # Step 3: Sort selected paths by probability (descending)
+    sorted_indices = torch.argsort(selected_probs, descending=True)
+    selected_triplets = [selected_triplets[i] for i in sorted_indices.tolist()]
     
     # Validate triplet format
     for triplet in selected_triplets:

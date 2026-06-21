@@ -116,10 +116,10 @@ class Predictor:
         """
         Run inference on test dataset.
         
-        Process:
-        1. Load test samples from dataloader
-        2. Forward pass to get ranking scores
-        3. Select top-k triplets with highest scores
+        Process (matches notebook Architecture-v8):
+        1. Forward pass → ranking_scores, path_probs
+        2. sample_paths(path_probs, triplets, k, ranking_scores) → stochastic selection
+        3. Sort selected paths by selected_probs descending
         4. Save results to JSON files in output directory
         
         Args:
@@ -190,8 +190,8 @@ class Predictor:
                 if question_embed.dim() == 1:
                     question_embed = question_embed.unsqueeze(0)
                 
-                # Forward pass to get ranking scores
-                combined_scores, _ = self.model.forward(
+                # Forward pass to get ranking scores and probabilities
+                combined_scores, path_probs = self.model.forward(
                     question_embed=question_embed,
                     triplet_embeds=triplet_embeds,
                     relation_embeds=relation_embeds,
@@ -199,21 +199,23 @@ class Predictor:
                 )
                 
                 # Handle NaN scores (Error Handling: NaN scores with uniform distribution)
-                scores_tensor = combined_scores.squeeze()
-                if torch.isnan(scores_tensor).any():
+                if torch.isnan(combined_scores).any():
                     logger.warning(
                         f"Batch {batch_idx}: Model produced NaN scores. "
                         f"Using uniform distribution for triplet selection."
                     )
-                    # Use uniform distribution: all triplets have equal scores
-                    scores_tensor = torch.ones_like(scores_tensor) / len(scores_tensor)
+                    path_probs = torch.ones_like(path_probs) / len(path_probs)
+                    combined_scores = torch.zeros_like(combined_scores)
                 
-                # Select top-k triplets
-                selected_triplets, selected_scores = self.select_top_k_triplets(
-                    scores=scores_tensor,
-                    triplets=triplets,
-                    k=top_k
-                )
+                # Select top-k using sample_paths (stochastic, matches notebook)
+                k = min(top_k, len(triplets))
+                selected_triplets, selected_probs, selected_ranking_scores, log_probs = \
+                    self.model.sample_paths(path_probs, triplets, k, combined_scores)
+                
+                # Sort selected paths by probability (descending)
+                sorted_indices = torch.argsort(selected_probs, descending=True)
+                selected_triplets = [selected_triplets[i] for i in sorted_indices.tolist()]
+                selected_scores = selected_probs[sorted_indices].cpu().tolist()
                 
                 # Compute reward for selected triplets
                 reward = compute_reward_v8(
