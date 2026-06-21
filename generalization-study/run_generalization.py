@@ -62,6 +62,7 @@ def load_kgscout_model(model_path: str, device: str) -> PathRankingModel:
     """Load a trained KGScout model from checkpoint directory."""
     logger.info(f"Loading KGScout model from: {model_path}")
     model = PathRankingModel.from_pretrained(model_path, device=device)
+    model.to(device)
     model.eval()
     logger.info(f"Model loaded. Hidden size: {model.hidden_size}")
     return model

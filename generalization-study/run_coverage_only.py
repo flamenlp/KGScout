@@ -38,6 +38,7 @@ def load_kgscout_model(model_path: str, device: str) -> PathRankingModel:
     """Load trained KGScout model."""
     logger.info(f"Loading model from: {model_path}")
     model = PathRankingModel.from_pretrained(model_path, device=device)
+    model.to(device)
     model.eval()
     return model
 
