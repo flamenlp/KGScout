@@ -188,8 +188,8 @@ class Evaluator:
         Compute path coverage metric.
         
         Path coverage returns 1.0 if a path exists between any question entity
-        and any answer entity in either direction (forward or backward) on
-        a directed graph built from selected triplets.
+        and any answer entity on an undirected graph built from selected triplets
+        (matches notebook implementation).
         
         Args:
             selected_triplets: List of (subject, relation, object) tuples
@@ -197,7 +197,7 @@ class Evaluator:
             a_entities: List of answer entity strings
         
         Returns:
-            1.0 if a reasoning path exists in either direction, 0.0 otherwise
+            1.0 if a reasoning path exists, 0.0 otherwise
         
         Requirements:
             - 5.3: Compute path coverage metrics during evaluation
@@ -205,12 +205,12 @@ class Evaluator:
         if not selected_triplets or not q_entities or not a_entities:
             return 0.0
         
-        # Build directed graph from selected triplets
-        G = nx.DiGraph()
+        # Build undirected graph from selected triplets (matches notebook)
+        G = nx.Graph()
         for s, r, o in selected_triplets:
             G.add_edge(s.lower(), o.lower(), relation=r.lower())
         
-        # Check forward direction: q_entity → a_entity
+        # Check if path exists between any question entity and any answer entity
         for q in q_entities:
             for a in a_entities:
                 qn, an = q.lower(), a.lower()
@@ -218,18 +218,6 @@ class Evaluator:
                     continue
                 try:
                     if nx.has_path(G, qn, an):
-                        return 1.0
-                except nx.NetworkXError:
-                    continue
-        
-        # Check backward direction: a_entity → q_entity
-        for a in a_entities:
-            for q in q_entities:
-                an, qn = a.lower(), q.lower()
-                if an not in G or qn not in G:
-                    continue
-                try:
-                    if nx.has_path(G, an, qn):
                         return 1.0
                 except nx.NetworkXError:
                     continue

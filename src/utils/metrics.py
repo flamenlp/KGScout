@@ -332,9 +332,9 @@ def compute_path_coverage(
     """
     Compute path coverage metric.
     
-    Path coverage is True if there exists a directed path in the triplet graph
-    from at least one question entity to at least one answer entity, checking
-    both forward (q→a) and backward (a→q) directions.
+    Path coverage is True if there exists a path in the triplet graph
+    from at least one question entity to at least one answer entity,
+    using an undirected graph (matching notebook implementation).
     
     Args:
         triplets: List of (subject, relation, object) tuples
@@ -342,7 +342,7 @@ def compute_path_coverage(
         answer_entities: List of answer entity strings
     
     Returns:
-        True if a reasoning path exists in either direction, False otherwise
+        True if a reasoning path exists, False otherwise
     
     Requirements:
         - 3.4: Check if a complete Reasoning_Path exists in the selected triplets for each question
@@ -350,12 +350,12 @@ def compute_path_coverage(
     if not triplets or not question_entities or not answer_entities:
         return False
     
-    # Build directed graph from triplets
-    G = nx.DiGraph()
+    # Build undirected graph from triplets (matches notebook)
+    G = nx.Graph()
     for s, r, o in triplets:
         G.add_edge(s.lower(), o.lower(), relation=r.lower())
     
-    # Check forward direction: q_entity → a_entity
+    # Check if path exists between any question entity and any answer entity
     for q_entity in question_entities:
         for a_entity in answer_entities:
             qn, an = q_entity.lower(), a_entity.lower()
@@ -363,18 +363,6 @@ def compute_path_coverage(
                 continue
             try:
                 if nx.has_path(G, qn, an):
-                    return True
-            except nx.NetworkXError:
-                continue
-    
-    # Check backward direction: a_entity → q_entity
-    for a_entity in answer_entities:
-        for q_entity in question_entities:
-            an, qn = a_entity.lower(), q_entity.lower()
-            if an not in G or qn not in G:
-                continue
-            try:
-                if nx.has_path(G, an, qn):
                     return True
             except nx.NetworkXError:
                 continue
