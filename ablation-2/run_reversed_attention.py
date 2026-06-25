@@ -51,6 +51,7 @@ from src.utils.metrics import (
     compute_f1_score, should_use_double_check, preprocess_date_answers,
 )
 from src.utils.llm_inference import load_llm_model, format_prompt, run_llm_inference
+from src.training.monitor import TrainingMonitor
 
 # Allow loading datasets saved from notebooks
 import __main__
@@ -354,7 +355,7 @@ class CosinePretrainer:
 class JointTrainer:
     def __init__(self, path_ranker, reward_func, max_grad_norm=1.0,
                  gradient_accumulation_steps=32, checkpoint_dir="checkpoints",
-                 baseline_decay=0.9):
+                 baseline_decay=0.9, monitor=None):
         self.reward_func = reward_func
         self.path_ranker = path_ranker.to(device)
         self.max_grad_norm = max_grad_norm
@@ -365,6 +366,7 @@ class JointTrainer:
         self.running_baseline = 0
         self.reward_buffer = []
         self.best_val_reward = float('-inf')
+        self.monitor = monitor
 
     def compute_reinforce_loss(self, log_probs, rewards, baseline):
         advantages = rewards - baseline
@@ -463,6 +465,14 @@ class JointTrainer:
             if (epoch + 1) % validation_interval == 0 and val_dataloader is not None:
                 val_loss, val_reward = self.validate(val_dataloader, k)
                 logger.info(f"    Val Reward: {val_reward:.4f}, Val Loss: {val_loss:.4f}")
+                # Log to monitor
+                if self.monitor:
+                    self.monitor.log_epoch({
+                        'train_reward': avg_reward,
+                        'train_loss': avg_loss,
+                        'val_reward': val_reward,
+                        'val_loss': val_loss,
+                    }, epoch + 1)
                 if val_reward > self.best_val_reward:
                     self.best_val_reward = val_reward
                     patience_counter = 0
@@ -472,6 +482,9 @@ class JointTrainer:
                 if patience_counter >= early_stopping_patience:
                     logger.info(f"    Early stopping at epoch {epoch + 1}")
                     break
+        # Generate plots at end of training
+        if self.monitor:
+            self.monitor.plot_metrics()
         logger.info(f"  Training complete. Best val reward: {self.best_val_reward:.4f}")
 
     def _save_checkpoint(self, epoch, is_best=False):
@@ -689,11 +702,13 @@ def main():
     # --- Step 3: Train with REINFORCE (n=1000, k=100, 30 epochs) ---
     logger.info("Step 3: Training with REINFORCE (n=1000, k=100, 30 epochs)...")
     train_dir = os.path.join(output_dir, "model", "trained")
+    monitor_dir = os.path.join(output_dir, "training_plots")
+    monitor = TrainingMonitor(log_dir=monitor_dir)
     train_sampled = SampledDataset(train_data, k=1000)
     val_sampled = SampledDataset(val_data, k=1000)
     train_loader = DataLoader(train_sampled, batch_size=1, shuffle=True)
     val_loader = DataLoader(val_sampled, batch_size=1, shuffle=False)
-    trainer = JointTrainer(model, compute_reward_v8, checkpoint_dir=train_dir)
+    trainer = JointTrainer(model, compute_reward_v8, checkpoint_dir=train_dir, monitor=monitor)
     trainer.train(train_loader, val_loader, num_epochs=30, k=100, early_stopping_patience=10)
 
     # Free train/val memory
