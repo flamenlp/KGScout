@@ -2,9 +2,31 @@
 # =============================================================================
 # Ablation-2: Reversed Attention Architecture Study
 # Runs for both CWQ and WebQSP datasets sequentially.
+#
+# Usage:
+#   Full training + evaluation:
+#     bash ablation-2/run_all.sh
+#
+#   Evaluation only (provide model checkpoint):
+#     bash ablation-2/run_all.sh --model-checkpoint /path/to/checkpoint_dir
 # =============================================================================
 
 set -e
+
+# ---------- PARSE OPTIONAL MODEL CHECKPOINT ----------
+MODEL_CHECKPOINT=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --model-checkpoint)
+            MODEL_CHECKPOINT="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
 
 # ---------- DATA PATHS ----------
 # CWQ
@@ -20,6 +42,15 @@ WEBQSP_TEST="/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer
 # ---------- OUTPUT ----------
 LLM_MODEL="llama"
 
+# ---------- BUILD CHECKPOINT ARG ----------
+CHECKPOINT_ARG=""
+if [ -n "$MODEL_CHECKPOINT" ]; then
+    CHECKPOINT_ARG="--model-checkpoint $MODEL_CHECKPOINT"
+    echo "Mode: EVALUATION ONLY (checkpoint: $MODEL_CHECKPOINT)"
+else
+    echo "Mode: FULL TRAINING + EVALUATION"
+fi
+
 # ---------- RUN ----------
 echo "============================================================"
 echo "ABLATION-2: Reversed Attention Experiments"
@@ -34,7 +65,8 @@ echo "============================================================"
 #     --val-data "$CWQ_VAL" \
 #     --test-data "$CWQ_TEST" \
 #     --output-dir "results/ablation-2" \
-#     --llm-model "$LLM_MODEL"
+#     --llm-model "$LLM_MODEL" \
+#     $CHECKPOINT_ARG
 #
 # echo ""
 # echo ">>> [V1] WebQSP..."
@@ -44,7 +76,8 @@ echo "============================================================"
 #     --val-data "$WEBQSP_VAL" \
 #     --test-data "$WEBQSP_TEST" \
 #     --output-dir "results/ablation-2" \
-#     --llm-model "$LLM_MODEL"
+#     --llm-model "$LLM_MODEL" \
+#     $CHECKPOINT_ARG
 
 # --- Variant 2: Reversed attention + attention weights in tower inputs ---
 echo ""
@@ -55,17 +88,19 @@ python ablation-2/run_reversed_attention2.py \
     --val-data "$CWQ_VAL" \
     --test-data "$CWQ_TEST" \
     --output-dir "results/ablation-2-v2" \
-    --llm-model "$LLM_MODEL"
+    --llm-model "$LLM_MODEL" \
+    $CHECKPOINT_ARG
 
 echo ""
-echo ">>> [V2] WebQSP..."
-python ablation-2/run_reversed_attention2.py \
-    --dataset webqsp \
-    --train-data "$WEBQSP_TRAIN" \
-    --val-data "$WEBQSP_VAL" \
-    --test-data "$WEBQSP_TEST" \
-    --output-dir "results/ablation-2-v2" \
-    --llm-model "$LLM_MODEL"
+# echo ">>> [V2] WebQSP..."
+# python ablation-2/run_reversed_attention2.py \
+#     --dataset webqsp \
+#     --train-data "$WEBQSP_TRAIN" \
+#     --val-data "$WEBQSP_VAL" \
+#     --test-data "$WEBQSP_TEST" \
+#     --output-dir "results/ablation-2-v2" \
+#     --llm-model "$LLM_MODEL" \
+#     $CHECKPOINT_ARG
 
 echo ""
 echo "============================================================"

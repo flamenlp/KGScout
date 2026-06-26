@@ -494,7 +494,7 @@ class JointTrainer:
 # ============================================================================
 
 @torch.no_grad()
-def run_coverage_analysis(test_data, model, top_k, output_dir):
+def run_coverage_analysis(test_data, model, top_k, output_dir, model_path=None):
     """Compute answer coverage and path coverage on test set."""
     logger.info("Running coverage analysis...")
     model.eval()
@@ -532,7 +532,8 @@ def run_coverage_analysis(test_data, model, top_k, output_dir):
 
     results = {"answer_coverage": ans_cov, "path_coverage": path_cov,
                "answer_coverage_count": answer_cov_count,
-               "path_coverage_count": path_cov_count, "total": total}
+               "path_coverage_count": path_cov_count, "total": total,
+               "model_path": model_path}
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, "coverage_results.json"), "w") as f:
         json.dump(results, f, indent=2)
@@ -544,7 +545,7 @@ def run_coverage_analysis(test_data, model, top_k, output_dir):
 # ============================================================================
 
 @torch.no_grad()
-def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llama"):
+def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llama", model_path=None):
     """Run LLM inference and compute QA metrics."""
     logger.info(f"Running LLM evaluation with {llm_model_name}...")
     model.eval()
@@ -616,6 +617,7 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
         "macro_recall": np.mean(recall_list) * 100 if n else 0,
         "exact_match": (np.array(f1_list) == 1).sum() / n * 100 if n else 0,
         "total_samples": n,
+        "model_path": model_path,
     }
 
     logger.info(f"  Hit: {metrics['hit']:.2f}, Hit@1: {metrics['hit_at_1']:.2f}, "
@@ -644,6 +646,8 @@ def main():
     parser.add_argument("--output-dir", type=str, default="results/ablation-2-v2/")
     parser.add_argument("--llm-model", type=str, default="llama", choices=["llama", "qwen", "deepseek"])
     parser.add_argument("--skip-llm", action="store_true", help="Skip LLM evaluation (coverage only)")
+    parser.add_argument("--model-checkpoint", type=str, default=None,
+                        help="Path to a trained model checkpoint directory. If provided, skips training and runs evaluation only.")
     args = parser.parse_args()
 
     output_dir = os.path.join(args.output_dir, args.dataset)
@@ -667,51 +671,88 @@ def main():
     logger.info("=" * 70)
 
     # Validate paths
-    for name, path in [("train", args.train_data), ("val", args.val_data), ("test", args.test_data)]:
-        if not os.path.exists(path):
-            logger.error(f"{name} data not found: {path}")
+    if not os.path.exists(args.test_data):
+        logger.error(f"test data not found: {args.test_data}")
+        sys.exit(1)
+
+    if args.model_checkpoint is not None:
+        # --- EVALUATION-ONLY MODE: Load checkpoint and run metrics ---
+        model_path = args.model_checkpoint
+        logger.info(f"Model checkpoint provided: {model_path}")
+        logger.info("Skipping training. Running evaluation only.")
+
+        if not os.path.exists(os.path.join(model_path, "path_ranker.pt")):
+            logger.error(f"path_ranker.pt not found in checkpoint dir: {model_path}")
             sys.exit(1)
 
-    # --- Step 1: Load Data ---
-    logger.info("Step 1: Loading data...")
-    train_data = torch.load(args.train_data, weights_only=False, map_location="cpu")
-    val_data = torch.load(args.val_data, weights_only=False, map_location="cpu")
-    logger.info(f"  Train: {len(train_data)}, Val: {len(val_data)}")
+        # Load model
+        model = PathRankingModelReversedAttention(device=str(device))
+        ckpt = torch.load(os.path.join(model_path, "path_ranker.pt"),
+                          weights_only=False, map_location="cpu")
+        model.question_triplet_attention.load_state_dict(ckpt['question_triplet_attention'])
+        model.question_relation_attention.load_state_dict(ckpt['question_relation_attention'])
+        model.gate_network.load_state_dict(ckpt['gate_network'])
+        model.triplet_mlp.load_state_dict(ckpt['triplet_mlp'])
+        model.relation_mlp.load_state_dict(ckpt['relation_mlp'])
+        model.combiner_mlp.load_state_dict(ckpt['combiner_mlp'])
+        model.temperature.data = ckpt['temperature'].to(device)
+        model.baseline.data = ckpt['baseline'].to(device)
+        model = model.to(device)
+        logger.info("  Model loaded from checkpoint.")
 
-    # --- Step 2: Pretrain (n=500, 5 epochs) ---
-    logger.info("Step 2: Pretraining (n=500, 5 epochs)...")
-    model = PathRankingModelReversedAttention(device=str(device))
-    pretrain_dir = os.path.join(output_dir, "model", "pretrained")
-    pretrain_ds = CosinePretrainingDataset(train_data, k=500)
-    pretrain_val_ds = CosinePretrainingDataset(val_data, k=500)
-    pretrain_loader = DataLoader(pretrain_ds, batch_size=1, shuffle=True, collate_fn=collate_fn_pretrain)
-    pretrain_val_loader = DataLoader(pretrain_val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn_pretrain)
-    pretrainer = CosinePretrainer(model, device=str(device), checkpoint_dir=pretrain_dir)
-    pretrainer.train(pretrain_loader, pretrain_val_loader, num_epochs=5)
+    else:
+        # --- FULL TRAINING MODE ---
+        model_path = None
 
-    # Load best pretrained weights
-    ckpt = torch.load(os.path.join(pretrain_dir, "best_pretrained_model-5.pt"),
-                      weights_only=False, map_location="cpu")
-    model.load_state_dict(ckpt["model_state_dict"])
-    logger.info("  Pretrained weights loaded.")
+        for name, path in [("train", args.train_data), ("val", args.val_data)]:
+            if not os.path.exists(path):
+                logger.error(f"{name} data not found: {path}")
+                sys.exit(1)
 
-    # --- Step 3: Train with REINFORCE (n=1000, k=100, 30 epochs) ---
-    logger.info("Step 3: Training with REINFORCE (n=1000, k=100, 30 epochs)...")
-    train_dir = os.path.join(output_dir, "model", "trained")
-    monitor_dir = os.path.join(output_dir, "training_plots")
-    monitor = TrainingMonitor(log_dir=monitor_dir)
-    train_sampled = SampledDataset(train_data, k=1000)
-    val_sampled = SampledDataset(val_data, k=1000)
-    train_loader = DataLoader(train_sampled, batch_size=1, shuffle=True)
-    val_loader = DataLoader(val_sampled, batch_size=1, shuffle=False)
-    trainer = JointTrainer(model, compute_reward_v8, checkpoint_dir=train_dir, monitor=monitor)
-    trainer.train(train_loader, val_loader, num_epochs=30, k=100, early_stopping_patience=10)
+        # --- Step 1: Load Data ---
+        logger.info("Step 1: Loading data...")
+        train_data = torch.load(args.train_data, weights_only=False, map_location="cpu")
+        val_data = torch.load(args.val_data, weights_only=False, map_location="cpu")
+        logger.info(f"  Train: {len(train_data)}, Val: {len(val_data)}")
 
-    # Free train/val memory
-    del train_data, val_data, train_loader, val_loader
-    import gc; gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        # --- Step 2: Pretrain (n=500, 5 epochs) ---
+        logger.info("Step 2: Pretraining (n=500, 5 epochs)...")
+        model = PathRankingModelReversedAttention(device=str(device))
+        pretrain_dir = os.path.join(output_dir, "model", "pretrained")
+        pretrain_ds = CosinePretrainingDataset(train_data, k=500)
+        pretrain_val_ds = CosinePretrainingDataset(val_data, k=500)
+        pretrain_loader = DataLoader(pretrain_ds, batch_size=1, shuffle=True, collate_fn=collate_fn_pretrain)
+        pretrain_val_loader = DataLoader(pretrain_val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn_pretrain)
+        pretrainer = CosinePretrainer(model, device=str(device), checkpoint_dir=pretrain_dir)
+        pretrainer.train(pretrain_loader, pretrain_val_loader, num_epochs=5)
+
+        # Load best pretrained weights
+        ckpt = torch.load(os.path.join(pretrain_dir, "best_pretrained_model-5.pt"),
+                          weights_only=False, map_location="cpu")
+        model.load_state_dict(ckpt["model_state_dict"])
+        logger.info("  Pretrained weights loaded.")
+
+        # --- Step 3: Train with REINFORCE (n=1000, k=100, 30 epochs) ---
+        logger.info("Step 3: Training with REINFORCE (n=1000, k=100, 30 epochs)...")
+        train_dir = os.path.join(output_dir, "model", "trained")
+        monitor_dir = os.path.join(output_dir, "training_plots")
+        monitor = TrainingMonitor(log_dir=monitor_dir)
+        train_sampled = SampledDataset(train_data, k=1000)
+        val_sampled = SampledDataset(val_data, k=1000)
+        train_loader = DataLoader(train_sampled, batch_size=1, shuffle=True)
+        val_loader = DataLoader(val_sampled, batch_size=1, shuffle=False)
+        trainer = JointTrainer(model, compute_reward_v8, checkpoint_dir=train_dir, monitor=monitor)
+        trainer.train(train_loader, val_loader, num_epochs=30, k=100, early_stopping_patience=10)
+
+        # Set model_path to the best checkpoint
+        model_path = os.path.join(train_dir, f"complete_{trainer.best_epoch}_best")
+        logger.info(f"  Best model path: {model_path}")
+
+        # Free train/val memory
+        del train_data, val_data, train_loader, val_loader
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # --- Step 4: Load test data & run coverage ---
     logger.info("Step 4: Loading test data and running coverage analysis...")
@@ -719,14 +760,14 @@ def main():
     logger.info(f"  Test: {len(test_data)}")
 
     coverage_dir = os.path.join(output_dir, "coverage")
-    run_coverage_analysis(test_data, model, top_k=100, output_dir=coverage_dir)
+    run_coverage_analysis(test_data, model, top_k=100, output_dir=coverage_dir, model_path=model_path)
 
     # --- Step 5: LLM evaluation ---
     if not args.skip_llm:
         logger.info("Step 5: Running LLM evaluation...")
         llm_dir = os.path.join(output_dir, "llm-results")
         run_llm_evaluation(test_data, model, top_k=100, output_dir=llm_dir,
-                           llm_model_name=args.llm_model)
+                           llm_model_name=args.llm_model, model_path=model_path)
     else:
         logger.info("Step 5: Skipped LLM evaluation (--skip-llm)")
 
