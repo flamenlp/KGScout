@@ -122,6 +122,11 @@ class PathRankingModelReversedAttention(nn.Module):
         # Extract attention weights as per-triplet relevance scores
         triplet_weights = triplet_weights.squeeze(0).squeeze(0)  # (N,)
         relation_weights = relation_weights.squeeze(0).squeeze(0)  # (N,)
+        # Ensure at least 1D when N=1
+        if triplet_weights.dim() == 0:
+            triplet_weights = triplet_weights.unsqueeze(0)
+        if relation_weights.dim() == 0:
+            relation_weights = relation_weights.unsqueeze(0)
 
         # Expand attended outputs to (N, d) for per-triplet scoring
         triplet_attended = triplet_attended.expand(num_triplets, -1)
