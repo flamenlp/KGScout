@@ -395,6 +395,8 @@ class JointTrainer:
         triplet_embeds = batch["topk_linearized_triplet_embeddings"].squeeze(0).to(device)
         relation_embeds = batch["topK_rel_embeddings"].squeeze(0).to(device)
         graph_features = batch["graph_features"].squeeze(0).to(device)
+        if graph_features.dim() == 1:
+            graph_features = graph_features.unsqueeze(0)
         if len(q_entity) == 0:
             return None, None
         ranking_scores, path_probs = self.path_ranker(ques_embed, triplet_embeds, relation_embeds, graph_features)
@@ -523,6 +525,8 @@ def run_coverage_analysis(test_data, model, top_k, output_dir, model_path=None):
         triplet_embeds = batch["topk_linearized_triplet_embeddings"].squeeze(0).to(device)
         relation_embeds = batch["topK_rel_embeddings"].squeeze(0).to(device)
         graph_features = batch["graph_features"].squeeze(0).to(device)
+        if graph_features.dim() == 1:
+            graph_features = graph_features.unsqueeze(0)
 
         ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
         k = min(top_k, len(triplets_structured))
@@ -581,6 +585,8 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
         triplet_embeds = batch["topk_linearized_triplet_embeddings"].squeeze(0).to(device)
         relation_embeds = batch["topK_rel_embeddings"].squeeze(0).to(device)
         graph_features = batch["graph_features"].squeeze(0).to(device)
+        if graph_features.dim() == 1:
+            graph_features = graph_features.unsqueeze(0)
 
         ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
         k = min(top_k, len(paths))
