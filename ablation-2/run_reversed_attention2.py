@@ -356,6 +356,7 @@ class JointTrainer:
         self.running_baseline = 0
         self.reward_buffer = []
         self.best_val_reward = float('-inf')
+        self.best_epoch = 0
         self.monitor = monitor
 
     def compute_reinforce_loss(self, log_probs, rewards, baseline):
@@ -463,8 +464,11 @@ class JointTrainer:
                         'val_reward': val_reward,
                         'val_loss': val_loss,
                     }, epoch + 1)
+                # Save checkpoint for every epoch
+                self._save_checkpoint(epoch + 1, is_best=False)
                 if val_reward > self.best_val_reward:
                     self.best_val_reward = val_reward
+                    self.best_epoch = epoch + 1
                     patience_counter = 0
                     self._save_checkpoint(epoch + 1, is_best=True)
                 else:
@@ -475,11 +479,13 @@ class JointTrainer:
         # Generate plots at end of training
         if self.monitor:
             self.monitor.plot_metrics()
-        logger.info(f"  Training complete. Best val reward: {self.best_val_reward:.4f}")
+        logger.info(f"  Training complete. Best val reward: {self.best_val_reward:.4f} at epoch {self.best_epoch}")
 
     def _save_checkpoint(self, epoch, is_best=False):
-        tag = "best" if is_best else f"epoch_{epoch}"
-        save_dir = os.path.join(self.checkpoint_dir, f"checkpoint_{tag}")
+        if is_best:
+            save_dir = os.path.join(self.checkpoint_dir, f"complete_{epoch}_best")
+        else:
+            save_dir = os.path.join(self.checkpoint_dir, f"complete_{epoch}")
         self.path_ranker.save_pretrained(save_dir)
 
 
