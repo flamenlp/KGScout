@@ -58,14 +58,14 @@ python ablation-2/run_reversed_attention2.py \
     --llm-model "$LLM_MODEL"
 
 echo ""
-# echo ">>> [V2] WebQSP..."
-# python ablation-2/run_reversed_attention2.py \
-#     --dataset webqsp \
-#     --train-data "$WEBQSP_TRAIN" \
-#     --val-data "$WEBQSP_VAL" \
-#     --test-data "$WEBQSP_TEST" \
-#     --output-dir "results/ablation-2-v2" \
-#     --llm-model "$LLM_MODEL"
+echo ">>> [V2] WebQSP..."
+python ablation-2/run_reversed_attention2.py \
+    --dataset webqsp \
+    --train-data "$WEBQSP_TRAIN" \
+    --val-data "$WEBQSP_VAL" \
+    --test-data "$WEBQSP_TEST" \
+    --output-dir "results/ablation-2-v2" \
+    --llm-model "$LLM_MODEL"
 
 echo ""
 echo "============================================================"
