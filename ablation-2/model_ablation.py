@@ -34,7 +34,7 @@ from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 import __main__
 __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 
