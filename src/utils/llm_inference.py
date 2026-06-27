@@ -130,7 +130,7 @@ Based on the given knowledge triplets, the coach of the team owned by Steve Bisc
 #     return prompt
 
 
-def format_prompt(question: str, triplets: List[str], topk: int = None) -> str:
+def format_prompt(question: str, triplets: List[str], topk: int = None, q_entity: List[str] = None) -> str:
     """
     Format LLM prompt with question and selected triplets (v2 - Two-phase reasoning).
     
@@ -144,8 +144,9 @@ def format_prompt(question: str, triplets: List[str], topk: int = None) -> str:
     
     Args:
         question: Question text
-        triplets: List of linearized triplet strings
+        triplets: List of linearized triplet strings (space-separated format)
         topk: Optional limit on number of triplets to include (default: use all)
+        q_entity: Optional list of question entity strings to help LLM anchor
     
     Returns:
         Formatted prompt string for LLM inference
@@ -165,23 +166,31 @@ def format_prompt(question: str, triplets: List[str], topk: int = None) -> str:
     na_format = '{"ans": ["answer not available"]}'
     ans_format = '{"ans": ["answer1", "answer2"]}'
     
+    # Format question entity info
+    entity_text = ""
+    if q_entity:
+        label = "Question Entities" if len(q_entity) > 1 else "Question Entity"
+        entity_text = f"{label}: {', '.join(q_entity)}\n\n"
+    
     # Create user query
     user_query = f"""
-Triplets:
+{entity_text}Triplets:
 {triplet_text}
 
 Question:
 {question}"""
     
-    # ICL Example 1 - successful multi-hop reasoning
+    # ICL Example 1 - successful multi-hop reasoning (space-separated triplets)
     icl_user_1 = """
+Question Entity: Lou Seal
+
 Triplets:
-- Lou Seal, sports.mascot.team, San Francisco Giants
-- San Francisco Giants, sports.sports_team.championships, 2012 World Series
-- San Francisco Giants, sports.sports_team.championships, 2010 World Series
-- San Francisco Giants, sports.sports_team.championships, 2014 World Series
-- Crazy Crab, sports.mascot.team, San Francisco Giants
-- New York Yankees, sports.sports_team.championships, 2009 World Series
+- Lou Seal sports mascot team San Francisco Giants
+- San Francisco Giants sports sports team championships 2012 World Series
+- San Francisco Giants sports sports team championships 2010 World Series
+- San Francisco Giants sports sports team championships 2014 World Series
+- Crazy Crab sports mascot team San Francisco Giants
+- New York Yankees sports sports team championships 2009 World Series
 
 Question:
 What year did the team with mascot named Lou Seal win the World Series?"""
@@ -189,19 +198,21 @@ What year did the team with mascot named Lou Seal win the World Series?"""
     icl_assistant_1 = """{"ans": ["2014", "2012", "2010"]}
 
 Reason:
-Phase 1 - Anchor: Question entity is "Lou Seal". Found in triplet: "Lou Seal, sports.mascot.team, San Francisco Giants". This connects Lou Seal to San Francisco Giants.
+Phase 1 - Anchor: Question entity is "Lou Seal". Found in triplet: "Lou Seal sports mascot team San Francisco Giants". This connects Lou Seal to San Francisco Giants.
 Phase 2 - Chain: Following "San Francisco Giants" through other triplets:
-  - "San Francisco Giants, sports.sports_team.championships, 2012 World Series" -> 2012
-  - "San Francisco Giants, sports.sports_team.championships, 2010 World Series" -> 2010
-  - "San Francisco Giants, sports.sports_team.championships, 2014 World Series" -> 2014
+  - "San Francisco Giants sports sports team championships 2012 World Series" -> 2012
+  - "San Francisco Giants sports sports team championships 2010 World Series" -> 2010
+  - "San Francisco Giants sports sports team championships 2014 World Series" -> 2014
 Answer entities found: 2010, 2012, 2014."""
 
     # ICL Example 2 - answer not available (no external knowledge used)
     icl_user_2 = """
+Question Entity: Steve Bisciotti
+
 Triplets:
-- Steve Bisciotti, sports.professional_sports_team.owner_s, Baltimore Ravens
-- Steve Bisciotti, sports.sports_team_owner.teams_owned, Baltimore Ravens
-- Steve Bisciotti, organization.organization_founder.organizations_founded, Allegis Group
+- Steve Bisciotti sports professional sports team owner s Baltimore Ravens
+- Steve Bisciotti sports sports team owner teams owned Baltimore Ravens
+- Steve Bisciotti organization organization founder organizations founded Allegis Group
 
 Question:
 Who is the coach of the team owned by Steve Bisciotti?"""
@@ -218,16 +229,18 @@ The answer cannot be determined from the provided triplets."""
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You are a knowledge graph question answering system. You answer questions EXCLUSIVELY using the provided knowledge triplets.
 
+IMPORTANT: Each triplet is a space-separated sequence of (subject, relation, object). The "Question Entity" field tells you which entity in the triplets is the starting point for reasoning.
+
 STRICT RULES:
 1> Your answer MUST be derived ONLY from the provided triplets.
 2> Follow this reasoning strategy:
-   Phase 1 - Anchor: Identify the entities mentioned in the question. Find ALL triplets where these question entities appear (as subject or object). Use these as anchor triplets.
-   Phase 2 - Chain: From the anchor triplets, follow the relations to connected entities. Check if those connected entities appear in other triplets. Continue chaining until you reach an entity that answers the question.
+   Phase 1 - Anchor: Use the provided Question Entity/Entities to find ALL triplets where any of them appear (at the start or end of a triplet). These are your anchor triplets.
+   Phase 2 - Chain: From the anchor triplets, identify the connected entities. Search for those entities in other triplets. Continue chaining until you reach an entity that answers the question.
    Phase 3 - Fallback: If Phase 1-2 does not yield an answer, examine the remaining triplets for any indirect connection that answers the question.
 3> If no reasoning path can be constructed from the triplets, return {na_format}.
 4> Provide your final answer FIRST in JSON format: {ans_format}
 5> Then show your reasoning path using the phases above.
-7> Ensure your answer does not contain duplicate entries.
+6> Ensure your answer does not contain duplicate entries.
 
 #Example 1:
 <|start_header_id|>user<|end_header_id|>

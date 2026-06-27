@@ -572,6 +572,7 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
     for i, batch in enumerate(tqdm(test_loader, desc="  LLM Eval", leave=False)):
         question = batch['question'][0]
         paths = [p[0] for p in batch['topk_linearized_triplets']]
+        q_entity = [p[0] for p in batch['q_entity']]
         ground_truth = [p[0] for p in batch["answer"]]
         if not ground_truth or len(paths) == 0:
             continue
@@ -591,7 +592,7 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
         sorted_indices = torch.argsort(selected_probs, descending=True)
         sorted_paths = [selected_paths[idx] for idx in sorted_indices.tolist()]
 
-        prompt = format_prompt(question, sorted_paths, topk=top_k)
+        prompt = format_prompt(question, sorted_paths, topk=top_k, q_entity=q_entity)
         try:
             raw_prediction = run_llm_inference(llm_model, tokenizer, prompt)
             prediction = extract_predictions_from_response(raw_prediction)
