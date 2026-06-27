@@ -62,12 +62,85 @@ Based on the given knowledge triplets, the coach of the team owned by Steve Bisc
 """
 
 
+# def format_prompt_v1(question: str, triplets: List[str], topk: int = None) -> str:
+#     """
+#     Format LLM prompt with question and selected triplets (ORIGINAL - v1).
+#     
+#     This function creates a prompt following the format used in lama-inference.py,
+#     including in-context learning examples and instructions.
+#     
+#     Args:
+#         question: Question text
+#         triplets: List of linearized triplet strings
+#         topk: Optional limit on number of triplets to include (default: use all)
+#     
+#     Returns:
+#         Formatted prompt string for LLM inference
+#     """
+#     # Limit triplets if topk specified
+#     if topk is not None:
+#         triplets = triplets[:topk]
+#     
+#     # Format triplets as bullet list
+#     triplet_text = "\n".join([f"- {triplet}" for triplet in triplets])
+#     
+#     # Define answer formats
+#     na_format = '{"ans": ["answer not available"]}'
+#     ans_format = '{"ans":["your answer 1","your answer 2"]}'
+#     
+#     # Create user query
+#     user_query = f"""
+# Linearized Triplets: 
+# {triplet_text}
+# 
+# Question:
+# {question}
+# 
+# Let's think step by step."""
+#     
+#     # Create full prompt with system message and ICL examples
+#     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+# You are a knowledge graph question answering system. Given a question and relevant linearized knowledge triplets, provide correct answers in JSON format supported by the triplets and provide a brief reason for the answer based on the triplets.
+# 
+# Instructions:
+# 1> Provide your final answer in JSON format using this placeholder: {ans_format}. If there is insufficient information to answer the question, return {na_format}.
+# 2> Ensure answer does not contain duplicate entries.
+# 3> Keep your reasoning brief and focused.
+# 4> Your answer must not contradict any information presented in the provided triplets.
+# 5> If the answer is directly supported by the triplets, use the triplets to justify your answer.
+# 6> If the answer is not explicitly found in the triplets, you may use your own factual knowledgebut only if it is consistent with the information in the triplets.
+# 
+# #Example 1:
+# {ICL_USER_PROMPT1}
+# #Answer:
+# {ICL_ASS_PROMPT1}
+# 
+# #Example 2:
+# {ICL_USER_PROMPT2}
+# #Answer:
+# {ICL_ASS_PROMPT2}
+# 
+# Now consider the below Triplets and answer the Question carefully
+# <|start_header_id|>user<|end_header_id|>
+# {user_query}
+# #Answer:
+# <|start_header_id|>assistant<|end_header_id|>
+# """
+#     
+#     return prompt
+
+
 def format_prompt(question: str, triplets: List[str], topk: int = None) -> str:
     """
-    Format LLM prompt with question and selected triplets.
+    Format LLM prompt with question and selected triplets (v2 - Two-phase reasoning).
     
-    This function creates a prompt following the format used in lama-inference.py,
-    including in-context learning examples and instructions.
+    Uses a structured two-phase reasoning strategy:
+      Phase 1: Anchor on question entities in the triplets
+      Phase 2: Chain through connected triplets to find the answer
+      Phase 3: Fallback - scan all triplets if anchoring fails
+    
+    Eliminates reliance on LLM internal knowledge — answers must come
+    exclusively from the provided triplets.
     
     Args:
         question: Question text
@@ -90,44 +163,87 @@ def format_prompt(question: str, triplets: List[str], topk: int = None) -> str:
     
     # Define answer formats
     na_format = '{"ans": ["answer not available"]}'
-    ans_format = '{"ans":["your answer 1","your answer 2"]}'
+    ans_format = '{"ans": ["answer1", "answer2"]}'
     
     # Create user query
     user_query = f"""
-Linearized Triplets: 
+Triplets:
 {triplet_text}
 
 Question:
-{question}
-
-Let's think step by step."""
+{question}"""
     
+    # ICL Example 1 - successful multi-hop reasoning
+    icl_user_1 = """
+Triplets:
+- Lou Seal, sports.mascot.team, San Francisco Giants
+- San Francisco Giants, sports.sports_team.championships, 2012 World Series
+- San Francisco Giants, sports.sports_team.championships, 2010 World Series
+- San Francisco Giants, sports.sports_team.championships, 2014 World Series
+- Crazy Crab, sports.mascot.team, San Francisco Giants
+- New York Yankees, sports.sports_team.championships, 2009 World Series
+
+Question:
+What year did the team with mascot named Lou Seal win the World Series?"""
+
+    icl_assistant_1 = """{"ans": ["2014", "2012", "2010"]}
+
+Reason:
+Phase 1 - Anchor: Question entity is "Lou Seal". Found in triplet: "Lou Seal, sports.mascot.team, San Francisco Giants". This connects Lou Seal to San Francisco Giants.
+Phase 2 - Chain: Following "San Francisco Giants" through other triplets:
+  - "San Francisco Giants, sports.sports_team.championships, 2012 World Series" -> 2012
+  - "San Francisco Giants, sports.sports_team.championships, 2010 World Series" -> 2010
+  - "San Francisco Giants, sports.sports_team.championships, 2014 World Series" -> 2014
+Answer entities found: 2010, 2012, 2014."""
+
+    # ICL Example 2 - answer not available (no external knowledge used)
+    icl_user_2 = """
+Triplets:
+- Steve Bisciotti, sports.professional_sports_team.owner_s, Baltimore Ravens
+- Steve Bisciotti, sports.sports_team_owner.teams_owned, Baltimore Ravens
+- Steve Bisciotti, organization.organization_founder.organizations_founded, Allegis Group
+
+Question:
+Who is the coach of the team owned by Steve Bisciotti?"""
+
+    icl_assistant_2 = """{"ans": ["answer not available"]}
+
+Reason:
+Phase 1 - Anchor: Question entity is "Steve Bisciotti". Found in all three triplets. Connected entities: Baltimore Ravens, Allegis Group.
+Phase 2 - Chain: Looking for triplets containing "Baltimore Ravens" with a coaching relation -> none found.
+Phase 3 - Fallback: No other triplet mentions a coach for any team.
+The answer cannot be determined from the provided triplets."""
+
     # Create full prompt with system message and ICL examples
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are a knowledge graph question answering system. Given a question and relevant linearized knowledge triplets, provide correct answers in JSON format supported by the triplets and provide a brief reason for the answer based on the triplets.
+You are a knowledge graph question answering system. You answer questions EXCLUSIVELY using the provided knowledge triplets.
 
-Instructions:
-1> Provide your final answer in JSON format using this placeholder: {ans_format}. If there is insufficient information to answer the question, return {na_format}.
-2> Ensure answer does not contain duplicate entries.
-3> Keep your reasoning brief and focused.
-4> Your answer must not contradict any information presented in the provided triplets.
-5> If the answer is directly supported by the triplets, use the triplets to justify your answer.
-6> If the answer is not explicitly found in the triplets, you may use your own factual knowledgebut only if it is consistent with the information in the triplets.
+STRICT RULES:
+1> Your answer MUST be derived ONLY from the provided triplets.
+2> Follow this reasoning strategy:
+   Phase 1 - Anchor: Identify the entities mentioned in the question. Find ALL triplets where these question entities appear (as subject or object). Use these as anchor triplets.
+   Phase 2 - Chain: From the anchor triplets, follow the relations to connected entities. Check if those connected entities appear in other triplets. Continue chaining until you reach an entity that answers the question.
+   Phase 3 - Fallback: If Phase 1-2 does not yield an answer, examine the remaining triplets for any indirect connection that answers the question.
+3> If no reasoning path can be constructed from the triplets, return {na_format}.
+4> Provide your final answer FIRST in JSON format: {ans_format}
+5> Then show your reasoning path using the phases above.
+7> Ensure your answer does not contain duplicate entries.
 
 #Example 1:
-{ICL_USER_PROMPT1}
-#Answer:
-{ICL_ASS_PROMPT1}
+<|start_header_id|>user<|end_header_id|>
+{icl_user_1}
+<|start_header_id|>assistant<|end_header_id|>
+{icl_assistant_1}
 
 #Example 2:
-{ICL_USER_PROMPT2}
-#Answer:
-{ICL_ASS_PROMPT2}
+<|start_header_id|>user<|end_header_id|>
+{icl_user_2}
+<|start_header_id|>assistant<|end_header_id|>
+{icl_assistant_2}
 
-Now consider the below Triplets and answer the Question carefully
+#Now answer the following:
 <|start_header_id|>user<|end_header_id|>
 {user_query}
-#Answer:
 <|start_header_id|>assistant<|end_header_id|>
 """
     
