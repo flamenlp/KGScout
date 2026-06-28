@@ -21,6 +21,13 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Set to False to skip training and only run inference from saved checkpoints
+IS_TRAIN_REQUIRED = False
+
+# ============================================================================
 # HARDCODED PATHS
 # ============================================================================
 TRAIN_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
@@ -71,14 +78,14 @@ def main():
         from importlib import import_module
         mod = import_module("ablation-2.model_ablation")
         t0 = time.time()
-        mod.run_model_ablation(TRAIN_DATA_PATH, VAL_DATA_PATH, TEST_DATA_PATH, MODEL_OUTPUT_DIR, args.experiments if args.mode == "model" else None)
+        mod.run_model_ablation(TRAIN_DATA_PATH, VAL_DATA_PATH, TEST_DATA_PATH, MODEL_OUTPUT_DIR, args.experiments if args.mode == "model" else None, train=IS_TRAIN_REQUIRED)
         logger.info(f"Model ablation time: {(time.time()-t0)/3600:.2f}h")
 
     if args.mode in ("all", "reward"):
         from importlib import import_module
         mod = import_module("ablation-2.reward_ablation")
         t0 = time.time()
-        mod.run_reward_ablation(TRAIN_DATA_PATH, VAL_DATA_PATH, TEST_DATA_PATH, REWARD_OUTPUT_DIR, args.experiments if args.mode == "reward" else None)
+        mod.run_reward_ablation(TRAIN_DATA_PATH, VAL_DATA_PATH, TEST_DATA_PATH, REWARD_OUTPUT_DIR, args.experiments if args.mode == "reward" else None, train=IS_TRAIN_REQUIRED)
         logger.info(f"Reward ablation time: {(time.time()-t0)/3600:.2f}h")
 
     logger.info("=" * 70)

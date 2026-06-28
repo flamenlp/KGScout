@@ -584,6 +584,8 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
         paths = [p[0] for p in batch['topk_linearized_triplets']]
         q_entity = [p[0] for p in batch['q_entity']]
         ground_truth = [p[0] for p in batch["answer"]]
+        # Extract structured triplets: (subject, relation, object)
+        structured_triplets = [(d[1][0][0], d[1][1][0], d[1][2][0]) for d in batch["topk_rel_data"]]
         if not ground_truth or len(paths) == 0:
             continue
 
@@ -596,13 +598,23 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
 
         ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
         k = min(top_k, len(paths))
-        selected_paths, selected_probs, _, _ = model.sample_paths(
-            path_probs, paths, k, ranking_scores)
+        # Sample using structured triplets
+        selected_triplets, selected_probs, _, _ = model.sample_paths(
+            path_probs, structured_triplets, k, ranking_scores)
 
         sorted_indices = torch.argsort(selected_probs, descending=True)
-        sorted_paths = [selected_paths[idx] for idx in sorted_indices.tolist()]
+        sorted_triplets = [selected_triplets[idx] for idx in sorted_indices.tolist()]
 
-        prompt = format_prompt(question, sorted_paths, topk=top_k, q_entity=q_entity)
+        # Format as comma-separated: "subject, relation (spaces), object"
+        def format_relation(rel):
+            """Convert 'award.award_nomination.award_nominee' to 'award award nomination award nominee'."""
+            return rel.replace('.', ' ').replace('_', ' ')
+
+        sorted_paths_formatted = [
+            f"{s}, {format_relation(r)}, {o}" for s, r, o in sorted_triplets
+        ]
+
+        prompt = format_prompt(question, sorted_paths_formatted, topk=top_k, q_entity=q_entity)
         try:
             raw_prediction = run_llm_inference(llm_model, tokenizer, prompt)
             prediction = extract_predictions_from_response(raw_prediction)
@@ -628,7 +640,8 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
 
         results.append({"question": question, "prediction": prediction,
                         "ground_truth": answer, "hit": hit, "hit_at_1": hit1,
-                        "f1": f1, "precision": prec, "recall": rec})
+                        "f1": f1, "precision": prec, "recall": rec,
+                        "selected_triplets": sorted_paths_formatted})
 
     n = len(hit_list)
     metrics = {

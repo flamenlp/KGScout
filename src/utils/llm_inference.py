@@ -132,15 +132,13 @@ Based on the given knowledge triplets, the coach of the team owned by Steve Bisc
 
 def format_prompt(question: str, triplets: List[str], topk: int = None, q_entity: List[str] = None) -> str:
     """
-    Format LLM prompt with question and selected triplets (v2 - Two-phase reasoning).
+    Format LLM prompt with question and selected triplets (v3 - Concise, no external knowledge).
     
-    Uses a structured two-phase reasoning strategy:
-      Phase 1: Anchor on question entities in the triplets
-      Phase 2: Chain through connected triplets to find the answer
-      Phase 3: Fallback - scan all triplets if anchoring fails
-    
-    Eliminates reliance on LLM internal knowledge — answers must come
-    exclusively from the provided triplets.
+    Simplified prompt that:
+      - Explicitly provides the question entity for anchoring
+      - Forbids external knowledge usage
+      - Keeps instructions concise for 8B model capacity
+      - Uses answer-first format for reliable JSON extraction
     
     Args:
         question: Question text
@@ -178,69 +176,58 @@ def format_prompt(question: str, triplets: List[str], topk: int = None, q_entity
 {triplet_text}
 
 Question:
-{question}"""
+{question}
+
+Let's think step by step."""
     
-    # ICL Example 1 - successful multi-hop reasoning (space-separated triplets)
+    # ICL Example 1 - successful multi-hop reasoning (comma-separated triplets)
     icl_user_1 = """
 Question Entity: Lou Seal
 
 Triplets:
-- Lou Seal sports mascot team San Francisco Giants
-- San Francisco Giants sports sports team championships 2012 World Series
-- San Francisco Giants sports sports team championships 2010 World Series
-- San Francisco Giants sports sports team championships 2014 World Series
-- Crazy Crab sports mascot team San Francisco Giants
-- New York Yankees sports sports team championships 2009 World Series
+- Lou Seal, sports mascot team, San Francisco Giants
+- San Francisco Giants, sports sports team championships, 2012 World Series
+- San Francisco Giants, sports sports team championships, 2010 World Series
+- San Francisco Giants, sports sports team championships, 2014 World Series
+- Crazy Crab, sports mascot team, San Francisco Giants
+- New York Yankees, sports sports team championships, 2009 World Series
 
 Question:
-What year did the team with mascot named Lou Seal win the World Series?"""
+What year did the team with mascot named Lou Seal win the World Series?
+
+Let's think step by step."""
 
     icl_assistant_1 = """{"ans": ["2014", "2012", "2010"]}
 
-Reason:
-Phase 1 - Anchor: Question entity is "Lou Seal". Found in triplet: "Lou Seal sports mascot team San Francisco Giants". This connects Lou Seal to San Francisco Giants.
-Phase 2 - Chain: Following "San Francisco Giants" through other triplets:
-  - "San Francisco Giants sports sports team championships 2012 World Series" -> 2012
-  - "San Francisco Giants sports sports team championships 2010 World Series" -> 2010
-  - "San Francisco Giants sports sports team championships 2014 World Series" -> 2014
-Answer entities found: 2010, 2012, 2014."""
+Reason: Lou Seal -> San Francisco Giants (via sports mascot team). San Francisco Giants -> 2012 World Series, 2010 World Series, 2014 World Series (via sports sports team championships)."""
 
-    # ICL Example 2 - answer not available (no external knowledge used)
+    # ICL Example 2 - answer not available
     icl_user_2 = """
 Question Entity: Steve Bisciotti
 
 Triplets:
-- Steve Bisciotti sports professional sports team owner s Baltimore Ravens
-- Steve Bisciotti sports sports team owner teams owned Baltimore Ravens
-- Steve Bisciotti organization organization founder organizations founded Allegis Group
+- Steve Bisciotti, sports professional sports team owner s, Baltimore Ravens
+- Steve Bisciotti, sports sports team owner teams owned, Baltimore Ravens
+- Steve Bisciotti, organization organization founder organizations founded, Allegis Group
 
 Question:
-Who is the coach of the team owned by Steve Bisciotti?"""
+Who is the coach of the team owned by Steve Bisciotti?
+
+Let's think step by step."""
 
     icl_assistant_2 = """{"ans": ["answer not available"]}
 
-Reason:
-Phase 1 - Anchor: Question entity is "Steve Bisciotti". Found in all three triplets. Connected entities: Baltimore Ravens, Allegis Group.
-Phase 2 - Chain: Looking for triplets containing "Baltimore Ravens" with a coaching relation -> none found.
-Phase 3 - Fallback: No other triplet mentions a coach for any team.
-The answer cannot be determined from the provided triplets."""
+Reason: Steve Bisciotti owns Baltimore Ravens, but no triplet contains a coaching relation for Baltimore Ravens."""
 
     # Create full prompt with system message and ICL examples
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are a knowledge graph question answering system. You answer questions EXCLUSIVELY using the provided knowledge triplets.
+You are a knowledge graph question answering system. Given a question, question entities, and relevant knowledge triplets, answer the question using ONLY the provided triplets.
 
-IMPORTANT: Each triplet is a space-separated sequence of (subject, relation, object). The "Question Entity" field tells you which entity in the triplets is the starting point for reasoning.
-
-STRICT RULES:
-1> Your answer MUST be derived ONLY from the provided triplets.
-2> Follow this reasoning strategy:
-   Phase 1 - Anchor: Use the provided Question Entity/Entities to find ALL triplets where any of them appear (at the start or end of a triplet). These are your anchor triplets.
-   Phase 2 - Chain: From the anchor triplets, identify the connected entities. Search for those entities in other triplets. Continue chaining until you reach an entity that answers the question.
-   Phase 3 - Fallback: If Phase 1-2 does not yield an answer, examine the remaining triplets for any indirect connection that answers the question.
-3> If no reasoning path can be constructed from the triplets, return {na_format}.
-4> Provide your final answer FIRST in JSON format: {ans_format}
-5> Then show your reasoning path using the phases above.
-6> Ensure your answer does not contain duplicate entries.
+Rules:
+1> Answer ONLY from the triplets. Do NOT use external knowledge.
+2> Start from the Question Entity, find triplets containing it, then follow connections to other entities until you find the answer.
+3> Provide answer in JSON format: {ans_format}. If the answer is not in the triplets, return {na_format}.
+4> Keep reasoning brief. No duplicate answers.
 
 #Example 1:
 <|start_header_id|>user<|end_header_id|>
@@ -254,7 +241,7 @@ STRICT RULES:
 <|start_header_id|>assistant<|end_header_id|>
 {icl_assistant_2}
 
-#Now answer the following:
+#Now answer:
 <|start_header_id|>user<|end_header_id|>
 {user_query}
 <|start_header_id|>assistant<|end_header_id|>

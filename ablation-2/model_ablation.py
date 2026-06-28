@@ -588,10 +588,17 @@ class JointTrainer:
 def generate_selected_json(tst_dl, output_dir, trainer, top_k):
     os.makedirs(output_dir, exist_ok=True)
     results = []; trainer.path_ranker.eval(); cnt = 0
+
+    def format_relation(rel):
+        """Convert 'award.award_nomination.award_nominee' to 'award award nomination award nominee'."""
+        return rel.replace('.', ' ').replace('_', ' ')
+
     for i, b in enumerate(tqdm(tst_dl, desc="  Inference", leave=False)):
         question = b['question'][0]
         paths = [p[0] for p in b['topk_linearized_triplets']]
         gt = [p[0] for p in b["answer"]]
+        # Extract structured triplets: (subject, relation, object)
+        structured_triplets = [(d[1][0][0], d[1][1][0], d[1][2][0]) for d in b["topk_rel_data"]]
         if not gt or not paths: continue
         if len(paths) >= top_k:
             qe = b["question_embedding"].to(device)
@@ -599,12 +606,16 @@ def generate_selected_json(tst_dl, output_dir, trainer, top_k):
             re = b["topK_rel_embeddings"].squeeze(0).to(device)
             gf = b["graph_features"].squeeze(0).to(device)
             scores, probs = trainer.path_ranker(qe, te, re, gf)
-            sp, sprobs, _, _ = trainer.path_ranker.sample_paths(probs, paths, top_k, scores)
+            sp, sprobs, _, _ = trainer.path_ranker.sample_paths(probs, structured_triplets, top_k, scores)
             si = torch.argsort(sprobs, descending=True)
-            sorted_p = [sp[j] for j in si.tolist()]
-            results.append({"question": question, "answer": gt, "a_entity": [p[0] for p in b["a_entity"]], "reranker": sorted_p})
+            sorted_triplets = [sp[j] for j in si.tolist()]
+            # Format as comma-separated: "subject, relation (spaces), object"
+            sorted_p = [f"{s}, {format_relation(r)}, {o}" for s, r, o in sorted_triplets]
+            results.append({"question": question, "answer": gt, "a_entity": [p[0] for p in b["a_entity"]], "q_entity": [p[0] for p in b["q_entity"]], "reranker": sorted_p})
         else:
-            results.append({"question": question, "answer": gt, "a_entity": [p[0] for p in b["a_entity"]], "reranker": paths}); cnt+=1
+            # Format all available triplets as comma-separated
+            formatted_paths = [f"{s}, {format_relation(r)}, {o}" for s, r, o in structured_triplets]
+            results.append({"question": question, "answer": gt, "a_entity": [p[0] for p in b["a_entity"]], "q_entity": [p[0] for p in b["q_entity"]], "reranker": formatted_paths}); cnt+=1
     with open(os.path.join(output_dir, 'selected_triplets.json'), "w") as f:
         json.dump(results, f)
     logger.info(f"  Saved {len(results)} samples ({cnt} < top_k)")
@@ -634,48 +645,51 @@ def _find_last_checkpoint(train_dir):
     return sorted(ckpts, key=ep, reverse=True)[0]
 
 
-def run_model_ablation(train_path, val_path, test_path, output_base="./results/ablation-2/model-ablation", experiments=None):
+def run_model_ablation(train_path, val_path, test_path, output_base="./results/ablation-2/model-ablation", experiments=None, train=True):
     logger.info("=" * 70)
     logger.info("ABLATION-2 MODEL ARCHITECTURE STUDIES (Reversed Attention)")
     logger.info("=" * 70)
     configs = experiments if experiments else list(MODEL_ABLATION_CONFIGS.keys())
 
-    # Phase 1: Train
-    logger.info("PHASE 1: Training")
-    train_data = torch.load(train_path, weights_only=False, map_location="cpu")
-    val_data = torch.load(val_path, weights_only=False, map_location="cpu")
-    logger.info(f"  Train: {len(train_data)}, Val: {len(val_data)}")
+    if train:
+        # Phase 1: Train
+        logger.info("PHASE 1: Training")
+        train_data = torch.load(train_path, weights_only=False, map_location="cpu")
+        val_data = torch.load(val_path, weights_only=False, map_location="cpu")
+        logger.info(f"  Train: {len(train_data)}, Val: {len(val_data)}")
 
-    for name in configs:
-        cfg = MODEL_ABLATION_CONFIGS[name]
-        logger.info(f"{'='*60}\n  {name}: {cfg['description']}\n{'='*60}")
-        exp_dir = os.path.join(output_base, name)
-        pt_dir = os.path.join(exp_dir, "model", "pretrained")
-        tr_dir = os.path.join(exp_dir, "model", "trained")
-        os.makedirs(exp_dir, exist_ok=True)
+        for name in configs:
+            cfg = MODEL_ABLATION_CONFIGS[name]
+            logger.info(f"{'='*60}\n  {name}: {cfg['description']}\n{'='*60}")
+            exp_dir = os.path.join(output_base, name)
+            pt_dir = os.path.join(exp_dir, "model", "pretrained")
+            tr_dir = os.path.join(exp_dir, "model", "trained")
+            os.makedirs(exp_dir, exist_ok=True)
 
-        model = cfg["model_class"](device=str(device))
-        # Pretrain
-        logger.info(f"  [1/2] Pretrain n=500, 5 ep")
-        pt_ds = CosinePretrainingDataset(train_data, k=500)
-        pv_ds = CosinePretrainingDataset(val_data, k=500)
-        pt_dl = DataLoader(pt_ds, batch_size=1, shuffle=True, collate_fn=collate_fn_pretrain)
-        pv_dl = DataLoader(pv_ds, batch_size=1, shuffle=False, collate_fn=collate_fn_pretrain)
-        CosinePretrainer(model, str(device), pt_dir).train(pt_dl, pv_dl, num_epochs=5)
-        ckpt = torch.load(os.path.join(pt_dir, "best_pretrained_model-5.pt"), weights_only=False, map_location="cpu")
-        model.load_state_dict(ckpt["model_state_dict"])
+            model = cfg["model_class"](device=str(device))
+            # Pretrain
+            logger.info(f"  [1/2] Pretrain n=500, 5 ep")
+            pt_ds = CosinePretrainingDataset(train_data, k=500)
+            pv_ds = CosinePretrainingDataset(val_data, k=500)
+            pt_dl = DataLoader(pt_ds, batch_size=1, shuffle=True, collate_fn=collate_fn_pretrain)
+            pv_dl = DataLoader(pv_ds, batch_size=1, shuffle=False, collate_fn=collate_fn_pretrain)
+            CosinePretrainer(model, str(device), pt_dir).train(pt_dl, pv_dl, num_epochs=5)
+            ckpt = torch.load(os.path.join(pt_dir, "best_pretrained_model-5.pt"), weights_only=False, map_location="cpu")
+            model.load_state_dict(ckpt["model_state_dict"])
 
-        # Train
-        logger.info(f"  [2/2] Train k=1000, sample=100, 30 ep")
-        tr_ds = SampledJointTrainingDataset(train_data, k=1000)
-        vl_ds = SampledJointTrainingDataset(val_data, k=1000)
-        tr_dl = DataLoader(tr_ds, batch_size=1, shuffle=True)
-        vl_dl = DataLoader(vl_ds, batch_size=1, shuffle=False)
-        JointTrainer(model, compute_reward_v8, checkpoint_dir=tr_dir).train(tr_dl, vl_dl, k=100)
-        logger.info(f"  Saved: {tr_dir}")
-        del model; torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            # Train
+            logger.info(f"  [2/2] Train k=1000, sample=100, 30 ep")
+            tr_ds = SampledJointTrainingDataset(train_data, k=1000)
+            vl_ds = SampledJointTrainingDataset(val_data, k=1000)
+            tr_dl = DataLoader(tr_ds, batch_size=1, shuffle=True)
+            vl_dl = DataLoader(vl_ds, batch_size=1, shuffle=False)
+            JointTrainer(model, compute_reward_v8, checkpoint_dir=tr_dir).train(tr_dl, vl_dl, k=100)
+            logger.info(f"  Saved: {tr_dir}")
+            del model; torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-    del train_data, val_data; torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        del train_data, val_data; torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    else:
+        logger.info("PHASE 1: SKIPPED (IS_TRAIN_REQUIRED=False)")
 
     # Phase 2: Inference
     logger.info(f"{'='*70}\nPHASE 2: Inference\n{'='*70}")
@@ -717,6 +731,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_data", required=True)
     parser.add_argument("--output_dir", default="./results/ablation-2/model-ablation")
     parser.add_argument("--experiments", nargs="+", default=None)
+    parser.add_argument("--skip_train", action="store_true", help="Skip training, only run inference from checkpoints")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    run_model_ablation(args.train_data, args.val_data, args.test_data, args.output_dir, args.experiments)
+    run_model_ablation(args.train_data, args.val_data, args.test_data, args.output_dir, args.experiments, train=not args.skip_train)
