@@ -132,17 +132,18 @@ Based on the given knowledge triplets, the coach of the team owned by Steve Bisc
 
 def format_prompt(question: str, triplets: List[str], topk: int = None, q_entity: List[str] = None) -> str:
     """
-    Format LLM prompt with question and selected triplets (v3 - Concise, no external knowledge).
+    Format LLM prompt with question and selected triplets (v4 - Full instructions, Llama-3.1 capable).
     
-    Simplified prompt that:
-      - Explicitly provides the question entity for anchoring
-      - Forbids external knowledge usage
-      - Keeps instructions concise for 8B model capacity
-      - Uses answer-first format for reliable JSON extraction
+    Comprehensive prompt with:
+      - Detailed instructions leveraging Llama-3.1-8B instruction-following capability
+      - Question analysis guidance (generic, no domain-specific types)
+      - Multi-hop chaining instruction
+      - Conjunction/multi-constraint handling
+      - 4 ICL examples: 2-hop forward, 2-hop backward (CVT), conjunction, answer not available
     
     Args:
         question: Question text
-        triplets: List of linearized triplet strings (space-separated format)
+        triplets: List of linearized triplet strings (comma-separated format)
         topk: Optional limit on number of triplets to include (default: use all)
         q_entity: Optional list of question entity strings to help LLM anchor
     
@@ -180,8 +181,11 @@ Question:
 
 Let's think step by step."""
     
-    # ICL Example 1 - successful multi-hop reasoning (comma-separated triplets)
+    # ICL Example 1 - 2-hop forward (composition)
     icl_user_1 = """
+Question:
+What year did the team with mascot named Lou Seal win the World Series?
+
 Question Entity: Lou Seal
 
 Triplets:
@@ -192,17 +196,67 @@ Triplets:
 - Crazy Crab, sports mascot team, San Francisco Giants
 - New York Yankees, sports sports team championships, 2009 World Series
 
-Question:
-What year did the team with mascot named Lou Seal win the World Series?
-
 Let's think step by step."""
 
     icl_assistant_1 = """{"ans": ["2014", "2012", "2010"]}
 
-Reason: Lou Seal -> San Francisco Giants (via sports mascot team). San Francisco Giants -> 2012 World Series, 2010 World Series, 2014 World Series (via sports sports team championships)."""
+Reason:
+The question asks for the years a team won the World Series, where the team has mascot Lou Seal.
+From the triplets, "Lou Seal, sports mascot team, San Francisco Giants" tells us Lou Seal's team is San Francisco Giants.
+Then "San Francisco Giants, sports sports team championships, 2012/2010/2014 World Series" — the relation "championships" corresponds to "win the World Series".
+Answer: 2014, 2012, 2010."""
 
-    # ICL Example 2 - answer not available
+    # ICL Example 2 - 2-hop backward (CVT node pattern)
     icl_user_2 = """
+Question:
+What award was Nina Dobrev nominated for?
+
+Question Entity: Nina Dobrev
+
+Triplets:
+- m.0z8n1zp, award award nomination award nominee, Nina Dobrev
+- m.0z8n1zp, award award nomination award, Teen Choice Award
+- Nina Dobrev, people person nationality, Canada
+
+Let's think step by step."""
+
+    icl_assistant_2 = """{"ans": ["Teen Choice Award"]}
+
+Reason:
+The question asks what award Nina Dobrev was nominated for.
+From the triplets, Nina Dobrev appears at the end of "m.0z8n1zp, award award nomination award nominee, Nina Dobrev" — the relation "award nominee" matches "nominated for". This connects to intermediate entity m.0z8n1zp.
+Then "m.0z8n1zp, award award nomination award, Teen Choice Award" — the relation "award" gives us the award name.
+Answer: Teen Choice Award."""
+
+    # ICL Example 3 - Conjunction (multiple constraints)
+    icl_user_3 = """
+Question:
+Which film directed by James Cameron also stars Leonardo DiCaprio?
+
+Question Entities: James Cameron, Leonardo DiCaprio
+
+Triplets:
+- Titanic, film film director, James Cameron
+- Avatar, film film director, James Cameron
+- Titanic, film film actor, Leonardo DiCaprio
+- The Revenant, film film actor, Leonardo DiCaprio
+
+Let's think step by step."""
+
+    icl_assistant_3 = """{"ans": ["Titanic"]}
+
+Reason:
+The question has two constraints: directed by James Cameron AND stars Leonardo DiCaprio.
+From "film director" relation: James Cameron directed Titanic, Avatar.
+From "film actor" relation: Leonardo DiCaprio acted in Titanic, The Revenant.
+The entity satisfying both constraints is Titanic.
+Answer: Titanic."""
+
+    # ICL Example 4 - Answer not available
+    icl_user_4 = """
+Question:
+Who is the coach of the team owned by Steve Bisciotti?
+
 Question Entity: Steve Bisciotti
 
 Triplets:
@@ -210,24 +264,27 @@ Triplets:
 - Steve Bisciotti, sports sports team owner teams owned, Baltimore Ravens
 - Steve Bisciotti, organization organization founder organizations founded, Allegis Group
 
-Question:
-Who is the coach of the team owned by Steve Bisciotti?
-
 Let's think step by step."""
 
-    icl_assistant_2 = """{"ans": ["answer not available"]}
+    icl_assistant_4 = """{"ans": ["answer not available"]}
 
-Reason: Steve Bisciotti owns Baltimore Ravens, but no triplet contains a coaching relation for Baltimore Ravens."""
+Reason:
+The question asks for the coach of the team owned by Steve Bisciotti.
+From the triplets, "Steve Bisciotti, sports sports team owner teams owned, Baltimore Ravens" — so the team is Baltimore Ravens.
+However, no triplet contains a coaching relation for Baltimore Ravens. The answer is not available in the provided triplets."""
 
     # Create full prompt with system message and ICL examples
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are a knowledge graph question answering system. Given a question, question entities, and relevant knowledge triplets, answer the question using ONLY the provided triplets.
+You are a knowledge graph question answering system. Given a question, question entities, and relevant knowledge triplets, provide correct answers in JSON format derived from the provided triplets.
 
-Rules:
-1> Answer ONLY from the triplets. Do NOT use external knowledge.
-2> Start from the Question Entity, find triplets containing it, then follow connections to other entities until you find the answer.
-3> Provide answer in JSON format: {ans_format}. If the answer is not in the triplets, return {na_format}.
-4> Keep reasoning brief. No duplicate answers.
+Instructions:
+1> First, analyze the question to identify: (a) what is being asked for, (b) what relations or properties the question refers to, and (c) whether the question has multiple constraints.
+2> Each triplet is formatted as (subject, relation, object). The Question Entity may appear at the start OR end of a triplet — check both positions.
+3> Starting from the Question Entity, find triplets containing it, then follow connections through shared entities across triplets until you reach the answer. You may need to chain through 2-3 triplets.
+4> Match the meaning of triplet relations to what the question asks. Only follow relations that are semantically relevant to the question.
+5> For questions with multiple conditions, find the entity that satisfies ALL conditions from the triplets.
+6> Provide your final answer in JSON format: {ans_format}. If the answer cannot be found in the triplets, return {na_format}.
+8> Ensure answers do not contain duplicate entries. Keep reasoning brief.
 
 #Example 1:
 <|start_header_id|>user<|end_header_id|>
@@ -240,6 +297,18 @@ Rules:
 {icl_user_2}
 <|start_header_id|>assistant<|end_header_id|>
 {icl_assistant_2}
+
+#Example 3:
+<|start_header_id|>user<|end_header_id|>
+{icl_user_3}
+<|start_header_id|>assistant<|end_header_id|>
+{icl_assistant_3}
+
+#Example 4:
+<|start_header_id|>user<|end_header_id|>
+{icl_user_4}
+<|start_header_id|>assistant<|end_header_id|>
+{icl_assistant_4}
 
 #Now answer:
 <|start_header_id|>user<|end_header_id|>
