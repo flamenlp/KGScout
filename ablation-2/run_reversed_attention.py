@@ -535,8 +535,9 @@ def run_coverage_analysis(test_data, model, top_k, output_dir, model_path=None):
 
         ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
         k = min(top_k, len(triplets_structured))
-        selected_triplets, selected_probs, _, _ = model.sample_paths(
-            path_probs, triplets_structured, k, ranking_scores)
+        # Deterministic top-k selection (no sampling at inference)
+        top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
+        selected_triplets = [triplets_structured[i] for i in top_k_indices.tolist()]
 
         if compute_answer_coverage(selected_triplets, a_entity):
             answer_cov_count += 1
@@ -598,12 +599,9 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
 
         ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
         k = min(top_k, len(paths))
-        # Sample using structured triplets
-        selected_triplets, selected_probs, _, _ = model.sample_paths(
-            path_probs, structured_triplets, k, ranking_scores)
-
-        sorted_indices = torch.argsort(selected_probs, descending=True)
-        sorted_triplets = [selected_triplets[idx] for idx in sorted_indices.tolist()]
+        # Deterministic top-k selection (greedy, no sampling at inference)
+        top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
+        sorted_triplets = [structured_triplets[i] for i in top_k_indices.tolist()]
 
         # Format as comma-separated: "subject, relation (spaces), object"
         def format_relation(rel):

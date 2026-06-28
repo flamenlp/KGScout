@@ -188,7 +188,10 @@ def evaluate_coverage(test_dataloader, model, device, top_k):
             graph_features = batch["graph_features"].squeeze(0).to(device)
 
             ranking_scores, path_probs = model(ques_embed, triplet_embeds, relation_embeds, graph_features)
-            selected_triplets, _, _, _ = model.sample_paths(path_probs, triplets, top_k, ranking_scores)
+            # Deterministic top-k selection (no sampling at inference)
+            k = min(top_k, len(triplets))
+            top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
+            selected_triplets = [triplets[i] for i in top_k_indices.tolist()]
 
             # Build undirected graph
             G = nx.Graph()

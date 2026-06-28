@@ -606,9 +606,9 @@ def generate_selected_json(tst_dl, output_dir, trainer, top_k):
             re = b["topK_rel_embeddings"].squeeze(0).to(device)
             gf = b["graph_features"].squeeze(0).to(device)
             scores, probs = trainer.path_ranker(qe, te, re, gf)
-            sp, sprobs, _, _ = trainer.path_ranker.sample_paths(probs, structured_triplets, top_k, scores)
-            si = torch.argsort(sprobs, descending=True)
-            sorted_triplets = [sp[j] for j in si.tolist()]
+            # Deterministic top-k selection (greedy, no sampling at inference)
+            top_k_scores, top_k_indices = torch.topk(scores, top_k)
+            sorted_triplets = [structured_triplets[j] for j in top_k_indices.tolist()]
             # Format as comma-separated: "subject, relation (spaces), object"
             sorted_p = [f"{s}, {format_relation(r)}, {o}" for s, r, o in sorted_triplets]
             results.append({"question": question, "answer": gt, "a_entity": [p[0] for p in b["a_entity"]], "q_entity": [p[0] for p in b["q_entity"]], "reranker": sorted_p})
