@@ -2,14 +2,17 @@
 """
 Comprehensive Failure Analysis for KGScout Reversed Attention Results.
 
-Analyzes model performance by:
-  1. Computing hop distribution of the test set (1-hop, 2-hop, 3-hop classes)
+Analyzes model performance by reading llm_detailed_results.json directly:
+  1. Loads test data to enrich LLM results with q_entity (matched by question + ground_truth)
+  2. Parses the selected_triplets from LLM results (model-ranked top-k triplets)
+  3. Computes hop distribution of the test set (1-hop, 2-hop, 3-hop classes)
      - Classification rule: if a question has both 1-hop and 2-hop paths,
        assign to 1-hop only. Same for 2-hop vs 3-hop → assign to lower hop.
-  2. Computing Hit score per hop class
-  3. Computing answer_entity presence and path_presence per hop class
-  4. Generating failure.json with questions where answer entity is missing
-  5. Additional diagnostic suggestions for prompt calibration
+  4. Computing Hit score per hop class
+  5. Computing answer_entity presence and path_presence per hop class
+     (using the SAME model-ranked triplets that were fed to the LLM)
+  6. Generating failure.json with questions where answer entity is missing
+  7. Additional diagnostic suggestions for prompt calibration
 
 Usage:
     python analyze_results.py --dataset cwq
@@ -38,15 +41,12 @@ import sys
 import json
 import argparse
 import logging
-import time
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
 import torch
 import networkx as nx
 import numpy as np
-from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,9 +54,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 from src.utils.metrics import (
     compute_answer_coverage, compute_path_coverage,
-    extract_predictions_from_response, compute_hit_score,
-    compute_hit_at_1, compute_precision, compute_recall,
-    compute_f1_score, should_use_double_check, preprocess_date_answers,
 )
 
 import __main__
@@ -83,34 +80,106 @@ def setup_logging(output_dir):
 
 
 # ============================================================================
-# DATASET
+# ENRICH LLM RESULTS WITH Q_ENTITY FROM TEST DATA
 # ============================================================================
 
-class SampledDataset(Dataset):
-    def __init__(self, dataset, k=1000):
-        self.dataset = dataset
-        self.k = k
+def enrich_llm_results_with_q_entity(llm_results: List[Dict], test_data_path: str) -> int:
+    """
+    Load test data, match each LLM result by (question, ground_truth) and
+    inject q_entity from the test dataset into the LLM result dict.
 
-    def __len__(self):
-        return len(self.dataset)
+    Returns the number of successfully matched samples.
+    """
+    logger.info(f"  Loading test data to extract q_entity: {test_data_path}")
+    test_data = torch.load(test_data_path, weights_only=False, map_location="cpu")
+    logger.info(f"  Test data loaded: {len(test_data)} samples")
 
-    def __getitem__(self, idx):
-        data = self.dataset[idx]
-        num_available = data["topk_linearized_triplet_embeddings"].shape[0]
-        use_nums = min(self.k, num_available)
-        return {
-            "question": data["question"],
-            "is_empty": data["is_empty"],
-            "q_entity": data["q_entity"],
-            "a_entity": data["a_entity"],
-            "answer": data["answer"],
-            "question_embedding": data["question_embedding"],
-            "topk_linearized_triplets": data["topk_linearized_triplets"][:use_nums],
-            "topk_linearized_triplet_embeddings": data["topk_linearized_triplet_embeddings"][:use_nums],
-            "topk_rel_data": data["topk_rel_data"][:use_nums],
-            "topK_rel_embeddings": data["topK_rel_embeddings"][:use_nums],
-            "graph_features": data["graph_features"][:use_nums],
-        }
+    # Build lookup: (question, frozenset(ground_truth)) -> q_entity
+    # Use question + sorted ground_truth as key to handle order differences
+    test_lookup = {}
+    for sample in test_data:
+        question = sample["question"]
+        # ground_truth in test data is stored as "answer" field
+        answers = sample.get("answer", [])
+        # Normalize: sort answers for consistent matching
+        key = (question, tuple(sorted(a.lower() for a in answers)))
+        test_lookup[key] = sample["q_entity"]
+
+    matched = 0
+    unmatched = 0
+    for llm_r in llm_results:
+        # Skip if q_entity already present
+        if "q_entity" in llm_r and llm_r["q_entity"]:
+            matched += 1
+            continue
+
+        question = llm_r["question"]
+        ground_truth = llm_r.get("ground_truth", [])
+        key = (question, tuple(sorted(a.lower() for a in ground_truth)))
+
+        if key in test_lookup:
+            llm_r["q_entity"] = test_lookup[key]
+            matched += 1
+        else:
+            # Fallback: try matching by question only (less precise but covers edge cases)
+            fallback_key = question
+            found = False
+            for sample in test_data:
+                if sample["question"] == fallback_key:
+                    llm_r["q_entity"] = sample["q_entity"]
+                    matched += 1
+                    found = True
+                    break
+            if not found:
+                llm_r["q_entity"] = []
+                unmatched += 1
+
+    logger.info(f"  Matched q_entity for {matched}/{len(llm_results)} samples ({unmatched} unmatched)")
+
+    # Free memory
+    del test_data
+    return matched
+
+
+# ============================================================================
+# TRIPLET PARSING
+# ============================================================================
+
+def parse_triplet_string(triplet_str: str) -> Tuple[str, str, str]:
+    """
+    Parse a formatted triplet string back into (subject, relation, object).
+
+    The format from run_reversed_attention.py is:
+        "subject, relation words, object"
+
+    Since relation can contain commas after format_relation() (unlikely but possible),
+    we split on ", " and treat first element as subject, last as object,
+    and everything in between as relation.
+    """
+    parts = triplet_str.split(", ")
+    if len(parts) < 3:
+        # Fallback: try splitting on just comma
+        parts = triplet_str.split(",")
+        parts = [p.strip() for p in parts]
+
+    if len(parts) < 3:
+        return (triplet_str, "", "")
+
+    subject = parts[0]
+    obj = parts[-1]
+    relation = ", ".join(parts[1:-1])
+    return (subject, relation, obj)
+
+
+def parse_triplets_from_llm_result(llm_result: Dict) -> List[Tuple[str, str, str]]:
+    """
+    Extract structured triplets from an LLM result entry's selected_triplets field.
+    """
+    selected = llm_result.get("selected_triplets", [])
+    triplets = []
+    for t_str in selected:
+        triplets.append(parse_triplet_string(t_str))
+    return triplets
 
 
 # ============================================================================
@@ -184,51 +253,75 @@ def run_analysis(args):
 
     logger.info("=" * 70)
     logger.info("FAILURE ANALYSIS: Hop Distribution + Per-Class Metrics")
+    logger.info("  (Using model-ranked triplets from llm_detailed_results.json)")
     logger.info("=" * 70)
 
-    # --- Load test data ---
-    logger.info(f"Loading test data from: {args.test_data}")
-    test_data = torch.load(args.test_data, weights_only=False, map_location="cpu")
-    logger.info(f"  Test samples: {len(test_data)}")
-
-    # --- Load LLM detailed results (if available) ---
+    # --- Load LLM detailed results ---
     llm_detailed_path = os.path.join(args.llm_results_dir, "llm_detailed_results.json")
-    llm_results = None
-    if os.path.exists(llm_detailed_path):
-        with open(llm_detailed_path, "r") as f:
-            llm_results = json.load(f)
-        logger.info(f"  Loaded LLM results: {len(llm_results)} samples")
+    if not os.path.exists(llm_detailed_path):
+        logger.error(f"LLM results not found at: {llm_detailed_path}")
+        logger.error("Cannot proceed without llm_detailed_results.json")
+        sys.exit(1)
+
+    with open(llm_detailed_path, "r") as f:
+        llm_results = json.load(f)
+    logger.info(f"  Loaded LLM results: {len(llm_results)} samples")
+
+    # --- Check that selected_triplets key exists ---
+    if llm_results and "selected_triplets" not in llm_results[0]:
+        logger.error("llm_detailed_results.json does not contain 'selected_triplets' key.")
+        logger.error("Re-run LLM evaluation with a version that saves selected_triplets.")
+        sys.exit(1)
+
+    # --- Enrich LLM results with q_entity from test data ---
+    has_q_entity = llm_results and "q_entity" in llm_results[0] and llm_results[0]["q_entity"]
+    if not has_q_entity:
+        logger.info("\n--- Enriching LLM results with q_entity from test data ---")
+        enrich_llm_results_with_q_entity(llm_results, args.test_data)
     else:
-        logger.warning(f"  LLM results not found at: {llm_detailed_path}")
-        logger.warning("  Will compute hop distribution and coverage only.")
+        logger.info("  q_entity already present in LLM results.")
+
 
     # --- Step 1: Compute hop distribution and per-sample metrics ---
-    logger.info("\n--- Step 1: Hop Distribution Analysis ---")
-
-    test_sampled = SampledDataset(test_data, k=1000)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("\n--- Step 1: Hop Distribution Analysis (using model-ranked triplets from LLM results) ---")
 
     per_sample_analysis = []
     hop_counter = defaultdict(int)
 
-    for idx in tqdm(range(len(test_sampled)), desc="  Classifying hops"):
-        sample = test_sampled[idx]
-        q_entities = sample["q_entity"]
-        a_entities = sample["a_entity"]
-        question = sample["question"]
+    for idx, llm_r in enumerate(llm_results):
+        question = llm_r["question"]
+        ground_truth = llm_r.get("ground_truth", [])
 
-        # Extract top-k structured triplets
-        topk_rel_data = sample["topk_rel_data"]
-        num_triplets = min(args.top_k, len(topk_rel_data))
-        triplets = [(d[1][0], d[1][1], d[1][2]) for d in topk_rel_data[:num_triplets]]
+        # Extract q_entity and a_entity
+        # ground_truth serves as a_entity for coverage check
+        a_entities = ground_truth
 
-        # Classify hop
-        hop_class = classify_question_hop(triplets, q_entities, a_entities)
+        # q_entity: try to get from llm_result if available, otherwise infer from triplets
+        q_entities = llm_r.get("q_entity", [])
+
+        # Parse the model-ranked triplets that were actually fed to the LLM
+        triplets = parse_triplets_from_llm_result(llm_r)
+
+        if len(triplets) == 0:
+            hop_class = "no-entity"
+            ans_cov = False
+            path_cov = False
+        else:
+            # Compute answer coverage and path coverage on the SAME triplets fed to LLM
+            ans_cov = compute_answer_coverage(triplets, a_entities)
+            path_cov = compute_path_coverage(triplets, q_entities, a_entities) if q_entities else False
+
+            # Classify hop (only meaningful if we have q_entities)
+            if q_entities:
+                hop_class = classify_question_hop(triplets, q_entities, a_entities)
+            else:
+                # Without q_entity, classify based on coverage only
+                if not ans_cov:
+                    hop_class = "no-entity"
+                else:
+                    hop_class = "unknown-hop"
+
         hop_counter[hop_class] += 1
-
-        # Compute answer coverage and path coverage for this sample
-        ans_cov = compute_answer_coverage(triplets, a_entities)
-        path_cov = compute_path_coverage(triplets, q_entities, a_entities)
 
         per_sample_analysis.append({
             "idx": idx,
@@ -238,28 +331,32 @@ def run_analysis(args):
             "hop_class": hop_class,
             "answer_coverage": ans_cov,
             "path_coverage": path_cov,
-            "num_triplets": num_triplets,
+            "num_triplets": len(triplets),
+            "hit": llm_r.get("hit", 0),
+            "hit_at_1": llm_r.get("hit_at_1", 0),
+            "f1": llm_r.get("f1", 0),
+            "precision": llm_r.get("precision", 0),
+            "recall": llm_r.get("recall", 0),
+            "prediction": llm_r.get("prediction", []),
+            "selected_triplets": llm_r.get("selected_triplets", []),
         })
 
     # Print hop distribution
     total = len(per_sample_analysis)
-    logger.info(f"\n  Hop Distribution (test set, top-{args.top_k} triplets):")
+    logger.info(f"\n  Hop Distribution (from LLM results, model-ranked top-{TOP_K} triplets):")
     logger.info(f"  {'Class':<12} {'Count':<8} {'Percent':<10}")
     logger.info(f"  {'-'*30}")
-    for cls in ["1-hop", "2-hop", "3-hop", "3+hop", "no-path", "no-entity"]:
+    all_classes = ["1-hop", "2-hop", "3-hop", "3+hop", "no-path", "no-entity", "unknown-hop"]
+    for cls in all_classes:
         cnt = hop_counter.get(cls, 0)
+        if cnt == 0:
+            continue
         pct = cnt / total * 100 if total > 0 else 0
         logger.info(f"  {cls:<12} {cnt:<8} {pct:.1f}%")
     logger.info(f"  {'Total':<12} {total:<8}")
 
     # --- Step 2 & 3: Per-class Hit scores and coverage ---
     logger.info("\n--- Step 2 & 3: Per-Class Hit Score + Coverage ---")
-
-    # Build a question→index map from LLM results
-    llm_map = {}
-    if llm_results:
-        for i, r in enumerate(llm_results):
-            llm_map[r["question"]] = r
 
     # Aggregate per hop class
     class_metrics = defaultdict(lambda: {
@@ -278,21 +375,18 @@ def run_analysis(args):
         if sample["path_coverage"]:
             metrics["path_coverage_count"] += 1
 
-        # Match with LLM results
-        if sample["question"] in llm_map:
-            llm_r = llm_map[sample["question"]]
-            metrics["hit_list"].append(llm_r.get("hit", 0))
-            metrics["hit1_list"].append(llm_r.get("hit_at_1", 0))
-            metrics["f1_list"].append(llm_r.get("f1", 0))
-            metrics["precision_list"].append(llm_r.get("precision", 0))
-            metrics["recall_list"].append(llm_r.get("recall", 0))
+        metrics["hit_list"].append(sample["hit"])
+        metrics["hit1_list"].append(sample["hit_at_1"])
+        metrics["f1_list"].append(sample["f1"])
+        metrics["precision_list"].append(sample["precision"])
+        metrics["recall_list"].append(sample["recall"])
 
     # Print per-class table
     logger.info(f"\n  {'Class':<12} {'N':<6} {'Hit%':<8} {'Hit@1%':<8} {'F1%':<8} {'AnsCov%':<9} {'PathCov%':<9}")
     logger.info(f"  {'-'*62}")
 
     summary_table = {}
-    for cls in ["1-hop", "2-hop", "3-hop", "3+hop", "no-path", "no-entity"]:
+    for cls in all_classes:
         m = class_metrics[cls]
         n = m["total"]
         if n == 0:
@@ -316,23 +410,23 @@ def run_analysis(args):
             "path_coverage_pct": round(path_cov, 2),
         }
 
+    # --- Overall metrics ---
+    overall_ans_cov = sum(1 for s in per_sample_analysis if s["answer_coverage"]) / total * 100
+    overall_path_cov = sum(1 for s in per_sample_analysis if s["path_coverage"]) / total * 100
+    overall_hit = np.mean([s["hit"] for s in per_sample_analysis]) * 100
+    overall_hit1 = np.mean([s["hit_at_1"] for s in per_sample_analysis]) * 100
+    overall_f1 = np.mean([s["f1"] for s in per_sample_analysis]) * 100
+
+    logger.info(f"  {'-'*62}")
+    logger.info(f"  {'OVERALL':<12} {total:<6} {overall_hit:<8.1f} {overall_hit1:<8.1f} {overall_f1:<8.1f} {overall_ans_cov:<9.1f} {overall_path_cov:<9.1f}")
+
     # --- Step 4: Generate failure.json ---
     logger.info("\n--- Step 4: Generating failure.json ---")
 
     failures = []
     for sample in per_sample_analysis:
-        # Failure = answer entity is NOT present in top-k triplets
+        # Failure = answer entity is NOT present in model-ranked top-k triplets
         if not sample["answer_coverage"]:
-            # Get the top-k triplets as formatted strings
-            idx = sample["idx"]
-            raw_sample = test_sampled[idx]
-            topk_rel_data = raw_sample["topk_rel_data"]
-            num_triplets = min(args.top_k, len(topk_rel_data))
-            triplets_formatted = [
-                f"{d[1][0]}, {d[1][1].replace('.', ' ').replace('_', ' ')}, {d[1][2]}"
-                for d in topk_rel_data[:num_triplets]
-            ]
-
             failure_entry = {
                 "question": sample["question"],
                 "q_entity": sample["q_entity"],
@@ -340,72 +434,62 @@ def run_analysis(args):
                 "hop_class": sample["hop_class"],
                 "answer_coverage": False,
                 "path_coverage": sample["path_coverage"],
-                "top_100_triplets": triplets_formatted,
+                "llm_prediction": sample["prediction"],
+                "llm_hit": sample["hit"],
+                "llm_f1": sample["f1"],
+                "top_100_triplets": sample["selected_triplets"],
             }
-
-            # Attach LLM prediction if available
-            if sample["question"] in llm_map:
-                llm_r = llm_map[sample["question"]]
-                failure_entry["llm_prediction"] = llm_r.get("prediction", [])
-                failure_entry["llm_hit"] = llm_r.get("hit", 0)
-                failure_entry["llm_f1"] = llm_r.get("f1", 0)
-
             failures.append(failure_entry)
 
     failure_path = os.path.join(args.output_dir, "failure.json")
     with open(failure_path, "w") as f:
         json.dump(failures, f, indent=2)
     logger.info(f"  Saved {len(failures)} failure cases to: {failure_path}")
-    logger.info(f"  (These are questions where answer entity is NOT in top-{args.top_k} triplets)")
+    logger.info(f"  (These are questions where answer entity is NOT in the model-ranked triplets fed to LLM)")
 
     # --- Also generate failures where entity IS present but Hit=0 ---
     llm_failures = []
-    if llm_results:
-        for sample in per_sample_analysis:
-            if sample["answer_coverage"] and sample["question"] in llm_map:
-                llm_r = llm_map[sample["question"]]
-                if llm_r.get("hit", 0) == 0:
-                    idx = sample["idx"]
-                    raw_sample = test_sampled[idx]
-                    topk_rel_data = raw_sample["topk_rel_data"]
-                    num_triplets = min(args.top_k, len(topk_rel_data))
-                    triplets_formatted = [
-                        f"{d[1][0]}, {d[1][1].replace('.', ' ').replace('_', ' ')}, {d[1][2]}"
-                        for d in topk_rel_data[:num_triplets]
-                    ]
-                    llm_failures.append({
-                        "question": sample["question"],
-                        "q_entity": sample["q_entity"],
-                        "a_entity": sample["a_entity"],
-                        "hop_class": sample["hop_class"],
-                        "answer_coverage": True,
-                        "path_coverage": sample["path_coverage"],
-                        "llm_prediction": llm_r.get("prediction", []),
-                        "ground_truth": llm_r.get("ground_truth", []),
-                        "llm_hit": 0,
-                        "llm_f1": llm_r.get("f1", 0),
-                        "top_100_triplets": triplets_formatted,
-                    })
+    for sample in per_sample_analysis:
+        if sample["answer_coverage"] and sample["hit"] == 0:
+            llm_failures.append({
+                "question": sample["question"],
+                "q_entity": sample["q_entity"],
+                "a_entity": sample["a_entity"],
+                "hop_class": sample["hop_class"],
+                "answer_coverage": True,
+                "path_coverage": sample["path_coverage"],
+                "llm_prediction": sample["prediction"],
+                "ground_truth": sample["a_entity"],
+                "llm_hit": 0,
+                "llm_f1": sample["f1"],
+                "top_100_triplets": sample["selected_triplets"],
+            })
 
-        llm_failure_path = os.path.join(args.output_dir, "failure_llm_wrong.json")
-        with open(llm_failure_path, "w") as f:
-            json.dump(llm_failures, f, indent=2)
-        logger.info(f"  Saved {len(llm_failures)} LLM failure cases (entity present but Hit=0) to: {llm_failure_path}")
+    llm_failure_path = os.path.join(args.output_dir, "failure_llm_wrong.json")
+    with open(llm_failure_path, "w") as f:
+        json.dump(llm_failures, f, indent=2)
+    logger.info(f"  Saved {len(llm_failures)} LLM failure cases (entity present but Hit=0) to: {llm_failure_path}")
 
     # --- Save summary ---
     summary = {
         "config": {
             "test_data": args.test_data,
             "llm_results_dir": args.llm_results_dir,
-            "top_k": args.top_k,
-            "total_test_samples": total,
+            "total_samples": total,
+            "source": "llm_detailed_results.json (model-ranked triplets)",
         },
-        "hop_distribution": {cls: hop_counter.get(cls, 0) for cls in
-                             ["1-hop", "2-hop", "3-hop", "3+hop", "no-path", "no-entity"]},
+        "overall_metrics": {
+            "hit": round(overall_hit, 2),
+            "hit_at_1": round(overall_hit1, 2),
+            "f1": round(overall_f1, 2),
+            "answer_coverage_pct": round(overall_ans_cov, 2),
+            "path_coverage_pct": round(overall_path_cov, 2),
+        },
+        "hop_distribution": {cls: hop_counter.get(cls, 0) for cls in all_classes if hop_counter.get(cls, 0) > 0},
         "per_class_metrics": summary_table,
         "failure_summary": {
             "total_missing_entity": len(failures),
-            "total_llm_wrong_with_entity": len(llm_failures) if llm_results else "N/A",
+            "total_llm_wrong_with_entity": len(llm_failures),
         },
     }
 
@@ -425,19 +509,19 @@ def run_analysis(args):
     entity_miss_pct = len(failures) / total * 100 if total > 0 else 0
     if entity_miss_pct > 30:
         suggestions.append(
-            f"[RETRIEVAL] {entity_miss_pct:.0f}% of test questions have answer entity MISSING "
-            f"from top-{args.top_k} triplets. This is the retrieval ceiling — no prompt can fix "
-            f"what the retriever doesn't supply. Consider: "
-            f"(a) Increasing k beyond 100, (b) Improving PPR/BM25 retrieval, "
+            f"[RETRIEVAL/MODEL] {entity_miss_pct:.0f}% of test questions have answer entity MISSING "
+            f"from the model-ranked top-{TOP_K} triplets. This is the model's retrieval ceiling — "
+            f"no prompt can fix what the model doesn't supply. Consider: "
+            f"(a) Increasing k beyond 100, (b) Improving the reward signal to favor answer-containing paths, "
             f"(c) Adding answer-entity-aware re-ranking during training."
         )
 
     # Suggestion based on LLM failures with entity present
-    if llm_results and llm_failures:
+    if llm_failures:
         llm_fail_pct = len(llm_failures) / total * 100
         suggestions.append(
             f"[PROMPT/LLM] {len(llm_failures)} questions ({llm_fail_pct:.1f}%) have the answer entity "
-            f"in triplets but the LLM still gets Hit=0. This is a prompt/inference issue. "
+            f"in the model-ranked triplets but the LLM still gets Hit=0. This is a prompt/inference issue. "
             f"Examine failure_llm_wrong.json to identify patterns:\n"
             f"    - Are predictions empty or 'answer not available'? → LLM not finding the path.\n"
             f"    - Are predictions wrong entities? → LLM confused by distractor triplets.\n"
@@ -499,8 +583,6 @@ def main():
     )
     parser.add_argument("--dataset", type=str, default="cwq", choices=["cwq", "webqsp"],
                         help="Dataset to analyze (default: cwq)")
-    parser.add_argument("--top-k", type=int, default=None,
-                        help=f"Override top-k (default: {TOP_K})")
 
     args = parser.parse_args()
 
@@ -514,7 +596,10 @@ def main():
         llm_results_dir = WEBQSP_LLM_RESULTS_DIR
         output_dir = WEBQSP_OUTPUT_DIR
 
-    top_k = args.top_k if args.top_k else TOP_K
+    llm_detailed_path = os.path.join(llm_results_dir, "llm_detailed_results.json")
+    if not os.path.exists(llm_detailed_path):
+        print(f"ERROR: LLM results not found: {llm_detailed_path}")
+        sys.exit(1)
 
     if not os.path.exists(test_data_path):
         print(f"ERROR: Test data not found: {test_data_path}")
@@ -528,7 +613,6 @@ def main():
     run_args.test_data = test_data_path
     run_args.llm_results_dir = llm_results_dir
     run_args.output_dir = output_dir
-    run_args.top_k = top_k
 
     run_analysis(run_args)
 
