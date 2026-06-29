@@ -50,7 +50,7 @@ from src.utils.metrics import (
     compute_hit_at_1, compute_precision, compute_recall,
     compute_f1_score, should_use_double_check, preprocess_date_answers,
 )
-from src.utils.llm_inference import load_llm_model, format_prompt, run_llm_inference
+from src.utils.llm_inference import load_llm_model, format_prompt, format_prompt_v5, run_llm_inference
 from src.training.monitor import TrainingMonitor
 
 # Allow loading datasets saved from notebooks
@@ -612,7 +612,7 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
             f"{s}, {format_relation(r)}, {o}" for s, r, o in sorted_triplets
         ]
 
-        prompt = format_prompt(question, sorted_paths_formatted, topk=top_k, q_entity=q_entity)
+        prompt = format_prompt_v5(question, sorted_paths_formatted, topk=top_k, q_entity=q_entity)
         try:
             raw_prediction = run_llm_inference(llm_model, tokenizer, prompt)
             prediction = extract_predictions_from_response(raw_prediction)
@@ -637,7 +637,8 @@ def run_llm_evaluation(test_data, model, top_k, output_dir, llm_model_name="llam
         recall_list.append(rec)
 
         results.append({"question": question, "prediction": prediction,
-                        "ground_truth": answer, "hit": hit, "hit_at_1": hit1,
+                        "ground_truth": answer, "q_entity": q_entity,
+                        "hit": hit, "hit_at_1": hit1,
                         "f1": f1, "precision": prec, "recall": rec,
                         "selected_triplets": sorted_paths_formatted})
 
