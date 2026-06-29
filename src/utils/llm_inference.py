@@ -554,7 +554,7 @@ def run_llm_inference(
     """
     try:
         # Tokenize input
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=8192)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
         # Generate response
