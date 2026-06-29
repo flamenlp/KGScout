@@ -12,21 +12,26 @@ Analyzes model performance by:
   5. Additional diagnostic suggestions for prompt calibration
 
 Usage:
-    python analyze_results.py \
-        --test-data /path/to/test.pt \
-        --llm-results-dir results/ablation-2/cwq/llm-results/ \
-        --coverage-results-dir results/ablation-2/cwq/coverage/ \
-        --output-dir results/ablation-2/cwq/analysis/ \
-        --top-k 100
-
-    # For WebQSP:
-    python analyze_results.py \
-        --test-data /path/to/webqsp/test.pt \
-        --llm-results-dir results/ablation-2/webqsp/llm-results/ \
-        --coverage-results-dir results/ablation-2/webqsp/coverage/ \
-        --output-dir results/ablation-2/webqsp/analysis/ \
-        --top-k 100
+    python analyze_results.py --dataset cwq
+    python analyze_results.py --dataset webqsp
 """
+
+# ============================================================================
+# HARDCODED CONFIGURATION
+# ============================================================================
+
+# --- CWQ Paths ---
+CWQ_TEST_DATA = "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
+CWQ_LLM_RESULTS_DIR = "./results/ablation-2/cwq/llm-results/"
+CWQ_OUTPUT_DIR = "./results/ablation-2/cwq/analysis/"
+
+# --- WebQSP Paths ---
+WEBQSP_TEST_DATA = "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+WEBQSP_LLM_RESULTS_DIR = "./results/ablation-2/webqsp/llm-results/"
+WEBQSP_OUTPUT_DIR = "./results/ablation-2/webqsp/analysis/"
+
+# --- Common ---
+TOP_K = 100
 
 import os
 import sys
@@ -491,47 +496,41 @@ def run_analysis(args):
 def main():
     parser = argparse.ArgumentParser(
         description="Failure analysis for KGScout reversed attention results",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # CWQ analysis:
-    python analyze_results.py \\
-        --test-data /path/to/cwq/test_jointrainer_path_dataset_v3_ppr.pt \\
-        --llm-results-dir results/ablation-2/cwq/llm-results/ \\
-        --output-dir results/ablation-2/cwq/analysis/ \\
-        --top-k 100
-
-    # WebQSP analysis:
-    python analyze_results.py \\
-        --test-data /path/to/webqsp/test_jointrainer_path_dataset_v3_ppr.pt \\
-        --llm-results-dir results/ablation-2/webqsp/llm-results/ \\
-        --output-dir results/ablation-2/webqsp/analysis/ \\
-        --top-k 100
-
-Output files:
-    analysis_summary.json    - Overall hop distribution + per-class metrics
-    failure.json             - Questions where answer entity is MISSING from triplets
-    failure_llm_wrong.json   - Questions where entity IS present but LLM gets Hit=0
-    suggestions.txt          - Actionable suggestions for prompt calibration
-    analysis.log             - Full log
-        """
     )
-    parser.add_argument("--test-data", type=str, required=True,
-                        help="Path to test .pt file")
-    parser.add_argument("--llm-results-dir", type=str, required=True,
-                        help="Path to directory containing llm_detailed_results.json")
-    parser.add_argument("--output-dir", type=str, default="results/analysis/",
-                        help="Output directory for analysis results")
-    parser.add_argument("--top-k", type=int, default=100,
-                        help="Number of top triplets used for evaluation (default: 100)")
+    parser.add_argument("--dataset", type=str, default="cwq", choices=["cwq", "webqsp"],
+                        help="Dataset to analyze (default: cwq)")
+    parser.add_argument("--top-k", type=int, default=None,
+                        help=f"Override top-k (default: {TOP_K})")
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.test_data):
-        print(f"ERROR: Test data not found: {args.test_data}")
+    # Select paths based on dataset
+    if args.dataset == "cwq":
+        test_data_path = CWQ_TEST_DATA
+        llm_results_dir = CWQ_LLM_RESULTS_DIR
+        output_dir = CWQ_OUTPUT_DIR
+    else:
+        test_data_path = WEBQSP_TEST_DATA
+        llm_results_dir = WEBQSP_LLM_RESULTS_DIR
+        output_dir = WEBQSP_OUTPUT_DIR
+
+    top_k = args.top_k if args.top_k else TOP_K
+
+    if not os.path.exists(test_data_path):
+        print(f"ERROR: Test data not found: {test_data_path}")
         sys.exit(1)
 
-    run_analysis(args)
+    # Create a namespace to pass to run_analysis
+    class Args:
+        pass
+
+    run_args = Args()
+    run_args.test_data = test_data_path
+    run_args.llm_results_dir = llm_results_dir
+    run_args.output_dir = output_dir
+    run_args.top_k = top_k
+
+    run_analysis(run_args)
 
 
 if __name__ == "__main__":
