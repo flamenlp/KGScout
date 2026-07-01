@@ -111,13 +111,27 @@ def run_evaluation(args):
     start_time = time.time()
 
     for i, sample in enumerate(tqdm(data, desc="  LLM Inference")):
-        question = sample["question"]
-        ground_truth = sample.get("answer", [])
-        q_entity = sample.get("q_entity", [])
-        a_entity = sample.get("a_entity", [])
-        triplets = sample.get("reranker", [])
+        try:
+            question = sample["question"]
+            ground_truth = sample.get("answer", sample.get("a_entity", []))
+            q_entity = sample.get("q_entity", [])
+            a_entity = sample.get("a_entity", [])
+            triplets = sample.get("reranker", [])
+        except (KeyError, TypeError) as e:
+            logger.warning(f"  Sample {i}: missing key or bad format: {e}")
+            continue
 
         if not ground_truth or not triplets:
+            continue
+
+        # Ensure ground_truth is a flat list of strings
+        if isinstance(ground_truth, dict):
+            ground_truth = list(ground_truth.values())[0] if ground_truth else []
+        if isinstance(ground_truth, str):
+            ground_truth = [ground_truth]
+        ground_truth = [str(a) for a in ground_truth if a]
+
+        if not ground_truth:
             continue
 
         # Limit to top-k triplets
@@ -130,13 +144,14 @@ def run_evaluation(args):
         try:
             raw_prediction = run_llm_inference(llm_model, tokenizer, prompt)
             prediction = extract_predictions_from_response(raw_prediction)
-            prediction = [s for s in prediction if s != ""]
+            prediction = [str(s) for s in prediction if s != "" and s is not None]
         except Exception as e:
             logger.warning(f"  LLM failed for sample {i}: {e}")
             prediction = []
 
-        # Preprocess answers
-        answer = preprocess_date_answers(question, ground_truth)
+        # Preprocess answers — ensure all items are strings
+        answer = [str(a) for a in ground_truth if a is not None and a != ""]
+        answer = preprocess_date_answers(question, answer)
         double_check = should_use_double_check(question)
 
         # Compute metrics

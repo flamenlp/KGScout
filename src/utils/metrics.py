@@ -113,7 +113,7 @@ def extract_predictions_from_response(response: str) -> List[str]:
     json_str = json_match.group(0)
     try:
         data = json.loads(json_str)
-        predictions = remove_duplicates(data["ans"])
+        predictions = remove_duplicates([str(x) for x in data["ans"]])
         return predictions
     except Exception:
         # JSON parsing failed - use entire response
