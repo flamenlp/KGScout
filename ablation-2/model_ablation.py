@@ -541,7 +541,7 @@ class JointTrainer:
         return tl/max(n,1), tr/max(n,1)
 
     def train(self, train_dl, val_dl, num_epochs=30, learning_rate=1e-4, warmup_steps=100,
-              scheduler_type='cosine', validation_interval=1, early_stopping_patience=3, k=100):
+              scheduler_type='cosine', validation_interval=1, early_stopping_patience=10, k=100):
         opt = torch.optim.AdamW(self.path_ranker.parameters(), lr=learning_rate)
         total = (len(train_dl)*num_epochs)//self.accum
         sched = get_cosine_schedule_with_warmup(opt, warmup_steps, total)
