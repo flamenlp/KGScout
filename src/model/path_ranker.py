@@ -10,15 +10,18 @@ import torch.nn.functional as F
 
 class PathRankingModel(nn.Module):
     """
-    Neural model for ranking knowledge graph triplets using attention mechanisms.
+    Neural model for ranking knowledge graph triplets using REVERSED attention mechanisms.
     
-    Architecture:
-    - Question-triplet attention (8 heads, hidden_size=384)
-    - Question-relation attention (8 heads, hidden_size=384)
+    Architecture (Reversed Attention):
+    - Question-triplet attention: Query=Question(1,d), Key=Value=Triplets(N,d)
+      → question attends over triplets, producing 1×d summary + N attention weights
+    - Question-relation attention: Query=Question(1,d), Key=Value=Relations(N,d)
+      → question attends over relations, producing 1×d summary + N attention weights
     - Gate network (3-layer MLP with sigmoid output)
+      → combines triplet and relation attention weights via learned gate
     - Triplet-centric scorer (3-layer MLP)
     - Relation-centric scorer (3-layer MLP)
-    - Combiner network (2-layer MLP)
+    - Combiner network (2-layer MLP) - takes tower_A, tower_B, gated_attention_weights
     - Learnable temperature and baseline parameters
     """
     
@@ -109,19 +112,28 @@ class PathRankingModel(nn.Module):
         # Ensure question_embed has batch dimension
         question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
         
-        # Compute attention between question and triplets
+        # REVERSED: Query=question(1,d), Key=Value=triplets(N,d)
         triplet_attended, triplet_weights = self.question_triplet_attention(
-            triplet_embeds, question_embed, question_embed
-        )
+            question_embed, triplet_embeds, triplet_embeds
+        )  # triplet_attended: (1, d), triplet_weights: (1, N)
         
-        # Compute attention between question and relations
+        # REVERSED: Query=question(1,d), Key=Value=relations(N,d)
         relation_attended, relation_weights = self.question_relation_attention(
-            relation_embeds, question_embed, question_embed
-        )
+            question_embed, relation_embeds, relation_embeds
+        )  # relation_attended: (1, d), relation_weights: (1, N)
         
-        # Squeeze attention weights
-        triplet_weights = triplet_weights.squeeze(0).squeeze(1)
-        relation_weights = relation_weights.squeeze(0).squeeze(1)
+        # Extract attention weights as per-triplet relevance scores
+        triplet_weights = triplet_weights.squeeze(0).squeeze(0)  # (N,)
+        relation_weights = relation_weights.squeeze(0).squeeze(0)  # (N,)
+        # Ensure at least 1D when N=1
+        if triplet_weights.dim() == 0:
+            triplet_weights = triplet_weights.unsqueeze(0)
+        if relation_weights.dim() == 0:
+            relation_weights = relation_weights.unsqueeze(0)
+        
+        # Expand attended outputs to (N, d) for per-triplet scoring
+        triplet_attended = triplet_attended.expand(num_triplets, -1)
+        relation_attended = relation_attended.expand(num_triplets, -1)
         
         # Expand question to match number of triplets
         question_expanded = question_embed.expand(num_triplets, -1)
@@ -129,6 +141,10 @@ class PathRankingModel(nn.Module):
         # Compute gate values
         gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
         path_gates = self.gate_network(gate_input).squeeze(-1)
+        
+        # Gated combination of attention weights:
+        # w_i = σ_i * triplet_weights_i + (1 - σ_i) * relation_weights_i
+        gated_attention_weights = path_gates * triplet_weights + (1 - path_gates) * relation_weights
         
         # Tower A: Triplet-centric score
         triplet_centric_input = torch.cat([
@@ -148,11 +164,11 @@ class PathRankingModel(nn.Module):
         ], dim=-1)
         tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
         
-        # Combine scores using combiner MLP
+        # Combiner takes 3 signals: tower_A, tower_B, gated_attention_weight
         combiner_input = torch.stack([
             tower_A_scores,
             tower_B_scores,
-            path_gates,
+            gated_attention_weights,
         ], dim=-1)
         combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
         

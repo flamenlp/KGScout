@@ -116,11 +116,10 @@ class Predictor:
         """
         Run inference on test dataset.
         
-        Process (matches notebook Architecture-v8):
+        Process:
         1. Forward pass → ranking_scores, path_probs
-        2. sample_paths(path_probs, triplets, k, ranking_scores) → stochastic selection
-        3. Sort selected paths by selected_probs descending
-        4. Save results to JSON files in output directory
+        2. Deterministic top-k selection via torch.topk(ranking_scores, k)
+        3. Save results to JSON files in output directory
         
         Args:
             test_dataloader: DataLoader with test samples
@@ -207,15 +206,11 @@ class Predictor:
                     path_probs = torch.ones_like(path_probs) / len(path_probs)
                     combined_scores = torch.zeros_like(combined_scores)
                 
-                # Select top-k using sample_paths (stochastic, matches notebook)
+                # Deterministic top-k selection (no sampling at inference)
                 k = min(top_k, len(triplets))
-                selected_triplets, selected_probs, selected_ranking_scores, log_probs = \
-                    self.model.sample_paths(path_probs, triplets, k, combined_scores)
-                
-                # Sort selected paths by probability (descending)
-                sorted_indices = torch.argsort(selected_probs, descending=True)
-                selected_triplets = [selected_triplets[i] for i in sorted_indices.tolist()]
-                selected_scores = selected_probs[sorted_indices].cpu().tolist()
+                top_k_scores, top_k_indices = torch.topk(combined_scores, k)
+                selected_triplets = [triplets[i] for i in top_k_indices.tolist()]
+                selected_scores = top_k_scores.cpu().tolist()
                 
                 # Compute reward for selected triplets
                 reward = compute_reward_v8(
