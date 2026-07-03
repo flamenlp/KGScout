@@ -23,10 +23,9 @@ def select_triplets_kgscout(
     """
     Select top-k triplets using KGscout model.
     
-    Logic (matches notebook Architecture-v8):
+    Logic:
     1. Forward pass → ranking_scores, path_probs
-    2. sample_paths(path_probs, triplets, k, ranking_scores) → stochastic selection
-    3. Sort selected paths by selected_probs descending
+    2. Deterministic top-k selection via torch.topk(ranking_scores, k)
     
     Args:
         model: Trained PathRankingModel
@@ -35,7 +34,7 @@ def select_triplets_kgscout(
         device: Device to run model on
     
     Returns:
-        List of (subject, relation, object) tuples sorted by probability
+        List of (subject, relation, object) tuples sorted by ranking score (descending)
     
     Requirements:
         - 10.1: Use the generate_selected_json method to select triplets when retriever-type is "kgscout"
@@ -65,14 +64,9 @@ def select_triplets_kgscout(
             graph_features
         )
     
-    # Step 2: sample_paths (stochastic selection, same as notebook)
-    selected_triplets, selected_probs, _, _ = model.sample_paths(
-        path_probs, triplets, k, ranking_scores
-    )
-    
-    # Step 3: Sort selected paths by probability (descending)
-    sorted_indices = torch.argsort(selected_probs, descending=True)
-    selected_triplets = [selected_triplets[i] for i in sorted_indices.tolist()]
+    # Deterministic top-k selection (no sampling at inference)
+    top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
+    selected_triplets = [triplets[i] for i in top_k_indices.tolist()]
     
     # Validate triplet format
     for triplet in selected_triplets:
@@ -246,3 +240,115 @@ def generate_selected_json(
             print(f"  ... and {len(errors) - 5} more errors")
     
     return output_path
+
+
+# ============================================================================
+# CLI ENTRY POINT
+# ============================================================================
+
+if __name__ == "__main__":
+    """
+    Generate selected_triplets.json from a trained model checkpoint.
+
+    Usage:
+        python -m src.utils.triplet_selector \
+            --model-path results/k-ablation/k100/model/main_training_k100/best_model_k100.pt \
+            --test-data /path/to/test.pt \
+            --output-dir results/k-ablation/k100/triplet-analysis/ \
+            --top-k 100
+
+        # Or with cosine retriever (no model needed):
+        python -m src.utils.triplet_selector \
+            --test-data /path/to/test.pt \
+            --output-dir results/cosine/triplet-analysis/ \
+            --top-k 100 \
+            --retriever cosine
+    """
+    import sys
+    import argparse
+    import torch as _torch
+
+    from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+
+    # Allow loading datasets saved from notebooks
+    import __main__ as _main
+    _main.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
+
+    parser = argparse.ArgumentParser(
+        description="Generate selected_triplets.json from a trained model"
+    )
+    parser.add_argument("--model-path", type=str, default=None,
+                        help="Path to trained model checkpoint (.pt file). Required for kgscout retriever.")
+    parser.add_argument("--test-data", type=str, required=True,
+                        help="Path to test dataset .pt file")
+    parser.add_argument("--output-dir", type=str, required=True,
+                        help="Output directory for selected_triplets.json")
+    parser.add_argument("--top-k", type=int, default=100,
+                        help="Number of triplets to select per sample (default: 100)")
+    parser.add_argument("--retriever", type=str, default="kgscout",
+                        choices=["kgscout", "cosine"],
+                        help="Retriever type (default: kgscout)")
+
+    args = parser.parse_args()
+
+    # Validate
+    if args.retriever == "kgscout" and args.model_path is None:
+        parser.error("--model-path is required for kgscout retriever")
+
+    if args.model_path and not os.path.exists(args.model_path):
+        print(f"ERROR: Model path not found: {args.model_path}", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.exists(args.test_data):
+        print(f"ERROR: Test data not found: {args.test_data}", file=sys.stderr)
+        sys.exit(1)
+
+    device = "cuda" if _torch.cuda.is_available() else "cpu"
+
+    print("=" * 70)
+    print("GENERATE SELECTED TRIPLETS")
+    print(f"  Model:     {args.model_path}")
+    print(f"  Test data: {args.test_data}")
+    print(f"  Output:    {args.output_dir}")
+    print(f"  Top-k:     {args.top_k}")
+    print(f"  Retriever: {args.retriever}")
+    print(f"  Device:    {device}")
+    print("=" * 70)
+
+    # Load model if kgscout
+    model = None
+    if args.retriever == "kgscout":
+        print("Loading model...")
+        model = PathRankingModel(hidden_size=384, device=device)
+        ckpt = _torch.load(args.model_path, weights_only=False, map_location="cpu")
+        if "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        else:
+            # save_pretrained format (component-level state dicts)
+            model.question_triplet_attention.load_state_dict(ckpt['question_triplet_attention'])
+            model.question_relation_attention.load_state_dict(ckpt['question_relation_attention'])
+            model.gate_network.load_state_dict(ckpt['gate_network'])
+            model.triplet_mlp.load_state_dict(ckpt['triplet_mlp'])
+            model.relation_mlp.load_state_dict(ckpt['relation_mlp'])
+            model.combiner_mlp.load_state_dict(ckpt['combiner_mlp'])
+            model.temperature.data = ckpt['temperature'].to(device)
+            model.baseline.data = ckpt['baseline'].to(device)
+        model.to(device)
+        model.eval()
+        print("  Model loaded.")
+
+    # Load test data
+    print("Loading test data...")
+    test_data = _torch.load(args.test_data, weights_only=False, map_location="cpu")
+    print(f"  Test samples: {len(test_data)}")
+
+    # Generate selected_triplets.json
+    output_path = generate_selected_json(
+        data=test_data,
+        model=model,
+        output_dir=args.output_dir,
+        k=args.top_k,
+        retriever_type=args.retriever,
+        device=device,
+    )
+
+    print(f"\nDone. Output: {output_path}")
