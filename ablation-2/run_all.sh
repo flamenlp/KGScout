@@ -28,11 +28,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ---------- DATA PATHS (read from dir_mapping.yml) ----------
+# ---------- DATA PATHS (read from config.yml) ----------
 read_yaml_field() {
     python3 -c "
 import yaml
-with open('dir_mapping.yml') as f:
+with open('config.yml') as f:
     cfg = yaml.safe_load(f)
 ds = cfg['datasets']
 print(ds['cwq']['train'])

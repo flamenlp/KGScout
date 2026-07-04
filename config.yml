@@ -1,0 +1,77 @@
+# =============================================================================
+# KGScout Directory Mapping
+# =============================================================================
+# Central configuration for all data paths, output paths, and experiment settings.
+# All scripts read from this file — update paths here when moving to a new machine.
+# =============================================================================
+
+# Dataset paths (absolute paths to preprocessed .pt files)
+datasets:
+  cwq:
+    train: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
+  webqsp:
+    train: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+
+# Result output directories
+results:
+  base: "./results"
+
+  # Ablation-2: Reversed attention architecture & reward ablations
+  ablation2:
+    model_ablation: "./results/ablation-2/model-ablation"
+    reward_ablation: "./results/ablation-2/reward-ablation"
+
+  # K-value ablation study
+  k_ablation: "./results/k-ablation"
+
+  # Generalization study (MetaQA)
+  generalization: "./results/generalization"
+
+# Experiment configuration
+experiments:
+  # K-ablation: values of k to sweep
+  k_ablation:
+    k_values: [30, 50, 100, 150]
+
+  # Model ablation variant names
+  model_variants: ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
+
+  # Reward ablation variant names
+  reward_variants: ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
+
+# Default hyperparameters
+defaults:
+  top_k: 100
+  sample_k: 1000
+  num_epochs: 30
+  early_stopping_patience: 10
+  llm_model: "llama"
+
+# LLM model identifiers
+llm_models:
+  llama: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  qwen: "Qwen/Qwen-7B-Chat"
+  deepseek: "deepseek-ai/deepseek-llm-7b-chat"
+
+# Log paths
+logs:
+  base: "./logs"
+  k_ablation: "./logs/k-ablation.log"
+  ablation2: "./logs/ablation2.log"
+  inference: "./logs/ablation_inference.log"
+  vllm_inference: "./logs/ablation_vllm_inference.log"
+  triplet_analysis: "./logs/triplet_analysis.log"
+
+# Generalization study (MetaQA) paths
+generalization:
+  kb_path: "data/metaqa/kb.txt"
+  qa_1hop: "data/metaqa/1-hop/vanilla/qa_test.txt"
+  qa_2hop: "data/metaqa/2-hop/vanilla/qa_test.txt"
+  qa_3hop: "data/metaqa/3-hop/vanilla/qa_test.txt"
+  processed_dir: "data/metaqa/processed"
+  model_path: "checkpoints/webqsp-k100/main/"
+  embedding_model: "all-MiniLM-L6-v2"

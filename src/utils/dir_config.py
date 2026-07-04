@@ -1,7 +1,7 @@
 """
 Centralized directory and path configuration loader.
 
-Loads dir_mapping.yml from the project root and provides helper functions
+Loads config.yml from the project root and provides helper functions
 to access dataset paths, result directories, and experiment settings.
 
 Usage:
@@ -21,25 +21,25 @@ _CONFIG_CACHE: Optional[Dict[str, Any]] = None
 
 
 def _find_project_root() -> str:
-    """Find the project root by looking for dir_mapping.yml starting from this file."""
+    """Find the project root by looking for config.yml starting from this file."""
     current = os.path.dirname(os.path.abspath(__file__))
     for _ in range(10):  # walk up at most 10 levels
-        candidate = os.path.join(current, "dir_mapping.yml")
+        candidate = os.path.join(current, "config.yml")
         if os.path.exists(candidate):
             return current
         current = os.path.dirname(current)
     raise FileNotFoundError(
-        "Could not find dir_mapping.yml in any parent directory. "
+        "Could not find config.yml in any parent directory. "
         "Ensure it exists at the project root."
     )
 
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    Load dir_mapping.yml configuration.
+    Load config.yml configuration.
 
     Args:
-        config_path: Optional explicit path to dir_mapping.yml.
+        config_path: Optional explicit path to config.yml.
                      If None, auto-discovers from project root.
 
     Returns:
@@ -51,7 +51,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     if config_path is None:
         root = _find_project_root()
-        config_path = os.path.join(root, "dir_mapping.yml")
+        config_path = os.path.join(root, "config.yml")
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
@@ -59,7 +59,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    if config_path is None or config_path == os.path.join(_find_project_root(), "dir_mapping.yml"):
+    if config_path is None or config_path == os.path.join(_find_project_root(), "config.yml"):
         _CONFIG_CACHE = config
 
     return config

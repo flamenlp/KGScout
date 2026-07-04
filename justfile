@@ -1,5 +1,5 @@
 # KGScout Experiment Runner
-# All paths are read from dir_mapping.yml
+# All paths are read from config.yml
 #
 # Usage: just k-ablation cwq
 #        just k-ablation webqsp
@@ -12,11 +12,11 @@ k-ablation dataset:
     #!/usr/bin/env bash
     set -e
 
-    # --- Read paths from dir_mapping.yml ---
+    # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to read dir_mapping.yml for dataset '{{dataset}}'"
+        echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"
         exit 1
     fi
 

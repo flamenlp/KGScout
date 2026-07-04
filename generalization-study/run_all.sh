@@ -11,13 +11,13 @@
 # Script continues on error so the terminal stays open
 
 # =============================================================================
-# CONFIGURATION - Read from dir_mapping.yml
+# CONFIGURATION - Read from config.yml
 # =============================================================================
 
-# Read generalization config from dir_mapping.yml
+# Read generalization config from config.yml
 YAML_OUT=$(python3 -c "
 import yaml
-with open('dir_mapping.yml') as f:
+with open('config.yml') as f:
     cfg = yaml.safe_load(f)
 g = cfg['generalization']
 d = cfg['defaults']

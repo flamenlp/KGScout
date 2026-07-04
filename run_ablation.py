@@ -59,7 +59,7 @@ from ablation.model_ablation import run_model_ablation
 from ablation.reward_ablation import run_reward_ablation
 
 # ============================================================================
-# DATA PATHS - loaded from dir_mapping.yml
+# DATA PATHS - loaded from config.yml
 # ============================================================================
 from src.utils.dir_config import load_config, get_dataset_paths, get_results_dir
 
