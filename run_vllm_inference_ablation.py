@@ -158,13 +158,26 @@ def evaluate_dataset_vllm(data, output_dir, llm, sampling_params, top_k):
 
     logger.info(f"    Built {len(prompts)} prompts from {len(data)} samples")
 
-    # Step 2: Batch inference via vLLM
-    logger.info("    Running vLLM batch inference...")
+    # Step 2: Batch inference via vLLM (chunked for progress tracking)
+    CHUNK_SIZE = 100  # Process in chunks of 100 for progress visibility
+    logger.info(f"    Running vLLM batch inference ({len(prompts)} prompts, chunks of {CHUNK_SIZE})...")
     t0 = time.time()
-    outputs = llm.generate(prompts, sampling_params)
+    outputs = []
+    for chunk_start in range(0, len(prompts), CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, len(prompts))
+        chunk = prompts[chunk_start:chunk_end]
+        chunk_outputs = llm.generate(chunk, sampling_params)
+        outputs.extend(chunk_outputs)
+        elapsed = time.time() - t0
+        logger.info(
+            f"    Progress: {chunk_end}/{len(prompts)} samples done "
+            f"({chunk_end / len(prompts) * 100:.0f}%) | "
+            f"Elapsed: {elapsed:.1f}s | "
+            f"Speed: {chunk_end / elapsed:.1f} samples/sec"
+        )
     inference_time = time.time() - t0
     logger.info(
-        f"    vLLM inference done: {len(outputs)} outputs in {inference_time:.1f}s "
+        f"    vLLM inference complete: {len(outputs)} outputs in {inference_time:.1f}s "
         f"({len(outputs) / inference_time:.1f} samples/sec)"
     )
 
