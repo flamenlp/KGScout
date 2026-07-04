@@ -10,6 +10,8 @@
 
 k-ablation dataset:
     #!/usr/bin/env bash
+    set -e
+
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -25,6 +27,9 @@ k-ablation dataset:
     BASE=$(echo "$YAML_OUTPUT" | sed -n '5p')
     DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '6p')
     LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
+
+    # Include dataset name in output path
+    BASE="$BASE/{{dataset}}"
 
     LOG="logs/k-ablation.log"
     mkdir -p logs
@@ -107,6 +112,8 @@ k-ablation dataset:
 
 k-ablation-cosine dataset:
     #!/usr/bin/env bash
+    set -e
+
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -119,8 +126,8 @@ k-ablation-cosine dataset:
     K_VALUES=$(echo "$YAML_OUTPUT" | sed -n '4p')
     LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
 
-    # Cosine ablation base dir (hardcoded from config, avoids modifying read_config.py)
-    BASE="./results/cosine-k-ablation"
+    # Cosine ablation base dir with dataset subdirectory
+    BASE="./results/cosine-k-ablation/{{dataset}}"
 
     LOG="logs/cosine-k-ablation.log"
     mkdir -p logs
