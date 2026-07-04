@@ -10,8 +10,6 @@
 
 k-ablation dataset:
     #!/usr/bin/env bash
-    set -e
-
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -100,4 +98,83 @@ k-ablation dataset:
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
     echo "K-ABLATION COMPLETE. Results in: $BASE/"                      | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# K-ABLATION-COSINE: Cosine baseline (no training) → Triplet Selection → vLLM Inference
+# ============================================================================
+
+k-ablation-cosine dataset:
+    #!/usr/bin/env bash
+    # --- Read paths from config.yml ---
+    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"
+        exit 1
+    fi
+
+    TEST=$(echo "$YAML_OUTPUT" | sed -n '3p')
+    K_VALUES=$(echo "$YAML_OUTPUT" | sed -n '4p')
+    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
+
+    # Cosine ablation base dir (hardcoded from config, avoids modifying read_config.py)
+    BASE="./results/cosine-k-ablation"
+
+    LOG="logs/cosine-k-ablation.log"
+    mkdir -p logs
+
+    echo "============================================================" | tee -a "$LOG"
+    echo "K-ABLATION-COSINE: {{dataset}} | k=$K_VALUES"                 | tee -a "$LOG"
+    echo "  Retriever: cosine (no trained model)"                       | tee -a "$LOG"
+    echo "  Test data: $TEST"                                           | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+    for K in $K_VALUES; do
+
+        echo "" | tee -a "$LOG"
+        echo "------------------------------------------------------------" | tee -a "$LOG"
+        echo "  K=$K (cosine top-k selection + vLLM inference)"             | tee -a "$LOG"
+        echo "------------------------------------------------------------" | tee -a "$LOG"
+
+        # ---- STEP 1: Triplet selection (cosine — no model needed) ----
+        TRIPLET_DIR="$BASE/k${K}/triplet-analysis"
+        TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
+
+        if [ -f "$TRIPLET_FILE" ]; then
+            echo "  [k=$K] STEP 1: selected_triplets.json exists. Skipping." | tee -a "$LOG"
+        else
+            echo "  [k=$K] STEP 1: Generating cosine triplets (top-k=$K)..." | tee -a "$LOG"
+            python -m src.utils.triplet_selector \
+                --test-data "$TEST" \
+                --output-dir "$TRIPLET_DIR" \
+                --top-k $K \
+                --retriever cosine \
+                2>&1 | tee -a "$LOG"
+        fi
+
+        # ---- STEP 2: vLLM LLM Inference ----
+        RESULT_DIR="$BASE/k${K}/model-result"
+        METRICS_FILE="$RESULT_DIR/llm_metrics.json"
+
+        if [ -f "$METRICS_FILE" ]; then
+            echo "  [k=$K] STEP 2: LLM results exist. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [k=$K] STEP 2: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [k=$K] STEP 2: Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            python run_vllm_inference_ablation.py \
+                --input "$TRIPLET_FILE" \
+                --output "$RESULT_DIR" \
+                --llm-model "$LLM_MODEL" \
+                --top-k $K \
+                2>&1 | tee -a "$LOG"
+        fi
+
+    done
+
+    echo "" | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+    echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/"               | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"

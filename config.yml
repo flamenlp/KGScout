@@ -28,6 +28,9 @@ results:
   # K-value ablation study
   k_ablation: "./results/k-ablation"
 
+  # Cosine baseline K-ablation (no trained model, uses cosine-sorted triplets)
+  cosine_k_ablation: "./results/cosine-k-ablation"
+
   # Generalization study (MetaQA)
   generalization: "./results/generalization"
 
@@ -61,6 +64,7 @@ llm_models:
 logs:
   base: "./logs"
   k_ablation: "./logs/k-ablation.log"
+  cosine_k_ablation: "./logs/cosine-k-ablation.log"
   ablation2: "./logs/ablation2.log"
   inference: "./logs/ablation_inference.log"
   vllm_inference: "./logs/ablation_vllm_inference.log"
