@@ -361,14 +361,17 @@ def run_llm_comparison_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = LLMComparisonService()
         results = service.run_comparison(
-            dataset=args.dataset,
             llm_model=args.llm_model,
-            retriever_type=args.retriever_type,
             k=args.k,
+            dataset_path=dataset_path,
             model_path=args.model_path,
-            output_dir=args.output_dir
+            retriever_type=args.retriever_type,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -385,17 +388,14 @@ def run_llm_comparison_command(args):
     print("\n" + "=" * 60)
     print("ANALYSIS COMPLETE")
     print("=" * 60)
-    print(f"Total Questions: {results['total_questions']}")
+    print(f"Total Questions: {results.get('total_samples', 0)}")
     print(f"\nMetrics:")
-    print(f"  Hit Score:       {results['hit']:.4f}")
-    print(f"  Hit@1 Score:     {results['hit_at_1']:.4f}")
-    print(f"  Macro F1:        {results['macro_f1']:.4f}")
-    print(f"  Macro Precision: {results['macro_precision']:.4f}")
-    print(f"  Macro Recall:    {results['macro_recall']:.4f}")
-    print(f"  Exact Match:     {results['exact_match']:.4f}")
-    print(f"\nOutput Files:")
-    print(f"  Predictions: {results['predictions_file']}")
-    print(f"  Results:     {results['results_file']}")
+    print(f"  Hit Score:       {results.get('hit', 0):.2f}%")
+    print(f"  Hit@1 Score:     {results.get('hit_at_1', 0):.2f}%")
+    print(f"  Macro F1:        {results.get('macro_f1', 0):.2f}%")
+    print(f"  Macro Precision: {results.get('macro_precision', 0):.2f}%")
+    print(f"  Macro Recall:    {results.get('macro_recall', 0):.2f}%")
+    print(f"  Exact Match:     {results.get('exact_match', 0):.2f}%")
     print("=" * 60)
 
 
@@ -446,14 +446,17 @@ def run_k_ablation_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = KAblationService()
         results = service.run_ablation(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             retriever_type=args.retriever_type,
             k_values=k_values,
             k=args.k,
             model_path=args.model_path,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -512,12 +515,16 @@ def run_coverage_analysis_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = CoverageAnalysisService()
         results = service.run_coverage_analysis(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             model_path=args.model_path,
             k_values=k_values,
-            output_dir=args.output_dir
+            dataset_name=args.dataset,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -533,8 +540,6 @@ def run_coverage_analysis_command(args):
     # Display summary
     print("\n" + "=" * 60)
     print("ANALYSIS COMPLETE")
-    print("=" * 60)
-    print(f"Results saved to: {results['output_file']}")
     print("=" * 60)
 
 
@@ -575,12 +580,16 @@ def run_statistical_analysis_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = StatisticalAnalysisService()
         results = service.run_statistical_analysis(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             model_path=args.model_path,
             k=args.k,
-            output_dir=args.output_dir
+            dataset_name=args.dataset,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)

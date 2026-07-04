@@ -2,59 +2,109 @@
 Triplet selection methods for KGscout and cosine retriever.
 
 This module provides functions for selecting top-k triplets using different retrieval methods:
-- KGscout: Uses trained PathRankingModel to rank triplets
+- KGscout: Uses trained PathRankingModel (or ablation variant) to rank triplets
 - Cosine: Uses pre-computed cosine similarity scores from dataset
+
+Supports both raw dataset dicts and DataLoader-batched format (batch_size=1, default collate).
+The DataLoader format is the standard pattern used throughout the project:
+    DataLoader(SampledJointTrainingDataset(...), batch_size=1, shuffle=False)
 """
 
 import json
 import os
 import torch
-from typing import List, Tuple, Dict, Any
+import torch.nn as nn
+from typing import List, Tuple, Dict, Any, Optional
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-from src.model.path_ranker import PathRankingModel
+
+
+def _extract_triplets_from_batch(batch: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+    """
+    Extract structured triplets from a DataLoader-batched sample.
+
+    In DataLoader(batch_size=1) with default collate, topk_rel_data becomes
+    a collated nested structure where each element is:
+        (score_tensor, (subject_tuple, relation_tuple, object_tuple))
+    with each string wrapped as a 1-tuple due to batch collation.
+
+    Args:
+        batch: Single batch from DataLoader(batch_size=1)
+
+    Returns:
+        List of (subject, relation, object) string tuples
+    """
+    triplets = []
+    for item in batch["topk_rel_data"]:
+        # item = (score, (subj_tuple, rel_tuple, obj_tuple))
+        # Each string is wrapped in a tuple of length 1 by default collate
+        s = item[1][0][0]
+        r = item[1][1][0]
+        o = item[1][2][0]
+        triplets.append((s, r, o))
+    return triplets
+
+
+def _is_dataloader_batch(data_sample: Dict[str, Any]) -> bool:
+    """
+    Detect whether data_sample is from a DataLoader (default collate, batch_size=1)
+    or a raw dataset dict.
+
+    Heuristic: In DataLoader-batched format, question_embedding has an extra batch dim
+    (dim >= 2 with shape[0] == 1) or 'question' is a list of strings.
+    """
+    # Check if question is wrapped in a list (DataLoader collates strings into lists)
+    if isinstance(data_sample.get("question"), (list, tuple)):
+        return True
+    return False
 
 
 def select_triplets_kgscout(
-    model: PathRankingModel,
+    model: nn.Module,
     data_sample: Dict[str, Any],
     k: int,
     device: str = "cuda"
 ) -> List[Tuple[str, str, str]]:
     """
-    Select top-k triplets using KGscout model.
-    
+    Select top-k triplets using a trained model (PathRankingModel or ablation variant).
+
+    Supports both:
+    - Raw dataset dict (from JointTrainingDatasetv3PPR.__getitem__)
+    - DataLoader-batched dict (from DataLoader(batch_size=1) with default collate)
+
     Logic:
     1. Forward pass → ranking_scores, path_probs
     2. Deterministic top-k selection via torch.topk(ranking_scores, k)
-    
+
     Args:
-        model: Trained PathRankingModel
-        data_sample: Single dataset sample with embeddings and triplets
+        model: Trained model with forward(question_embed, triplet_embeds, relation_embeds, graph_features)
+        data_sample: Dataset sample or DataLoader batch (batch_size=1)
         k: Number of top triplets to select
         device: Device to run model on
-    
+
     Returns:
         List of (subject, relation, object) tuples sorted by ranking score (descending)
-    
-    Requirements:
-        - 10.1: Use the generate_selected_json method to select triplets when retriever-type is "kgscout"
-        - 10.4: Validate that selected triplets contain required fields (subject, relation, object)
     """
-    # Extract required data from sample
+    is_batch = _is_dataloader_batch(data_sample)
+
+    # Extract tensors (handle batch dim from DataLoader)
     question_embed = data_sample["question_embedding"].to(device)
     triplet_embeds = data_sample["topk_linearized_triplet_embeddings"].squeeze(0).to(device)
     relation_embeds = data_sample["topK_rel_embeddings"].squeeze(0).to(device)
-    graph_features = data_sample["graph_features"].to(device)
-    
-    # Get triplets from topk_rel_data
-    triplets = [triplet for _, triplet in data_sample["topk_rel_data"]]
-    
+    graph_features = data_sample["graph_features"].squeeze(0).to(device)
+
+    # Extract triplets based on format
+    if is_batch:
+        triplets = _extract_triplets_from_batch(data_sample)
+    else:
+        triplets = [triplet for _, triplet in data_sample["topk_rel_data"]]
+
     # Handle empty triplets
     if len(triplets) == 0:
         return []
-    
+
     k = min(k, len(triplets))
-    
+
     # Forward pass to get ranking scores and probabilities
     with torch.no_grad():
         ranking_scores, path_probs = model(
@@ -63,19 +113,11 @@ def select_triplets_kgscout(
             relation_embeds,
             graph_features
         )
-    
+
     # Deterministic top-k selection (no sampling at inference)
     top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
     selected_triplets = [triplets[i] for i in top_k_indices.tolist()]
-    
-    # Validate triplet format
-    for triplet in selected_triplets:
-        if not isinstance(triplet, (tuple, list)) or len(triplet) != 3:
-            raise ValueError(
-                f"Invalid triplet format: {triplet}. "
-                f"Expected 3-tuple (subject, relation, object)."
-            )
-    
+
     return selected_triplets
 
 
@@ -85,160 +127,162 @@ def select_triplets_cosine(
 ) -> List[Tuple[str, str, str]]:
     """
     Select top-k triplets using cosine similarity (from dataset).
-    
+
+    Since data in the dataset is already sorted by cosine similarity (descending),
+    this simply takes the first k triplets.
+
+    Supports both raw dataset dict and DataLoader-batched format.
+
     Args:
-        data_sample: Single dataset sample with topk_rel_data
+        data_sample: Dataset sample or DataLoader batch (batch_size=1)
         k: Number of top triplets to select
-    
+
     Returns:
         List of (subject, relation, object) tuples
-    
-    Requirements:
-        - 10.2: Extract triplets from the topk_linearized_triplets dataset field when retriever-type is "cosine"
-        - 10.3: Ensure both retriever methods produce Selected_JSON in the same format
-        - 10.4: Validate that selected triplets contain required fields (subject, relation, object)
     """
-    # Get triplets from topk_rel_data (already sorted by cosine similarity)
-    triplets = [triplet for _, triplet in data_sample["topk_rel_data"]]
-    
+    is_batch = _is_dataloader_batch(data_sample)
+
+    # Extract triplets based on format
+    if is_batch:
+        triplets = _extract_triplets_from_batch(data_sample)
+    else:
+        triplets = [triplet for _, triplet in data_sample["topk_rel_data"]]
+
     # Handle empty triplets
     if len(triplets) == 0:
         return []
-    
-    # Select top-k triplets
+
+    # Select top-k triplets (already sorted by cosine similarity)
     k = min(k, len(triplets))
     selected_triplets = triplets[:k]
-    
-    # Validate triplet format
-    for triplet in selected_triplets:
-        if not isinstance(triplet, (tuple, list)) or len(triplet) != 3:
-            raise ValueError(
-                f"Invalid triplet format: {triplet}. "
-                f"Expected 3-tuple (subject, relation, object)."
-            )
-    
+
     return selected_triplets
 
 
+def _extract_metadata_from_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract question, answer, entity metadata from a DataLoader-batched sample.
+
+    Args:
+        batch: Single batch from DataLoader(batch_size=1)
+
+    Returns:
+        Dict with question, answer, a_entity, q_entity as plain strings/lists
+    """
+    question = batch["question"][0] if isinstance(batch["question"], (list, tuple)) else batch["question"]
+    answer = [p[0] for p in batch["answer"]] if isinstance(batch["answer"], (list, tuple)) and len(batch["answer"]) > 0 and isinstance(batch["answer"][0], (list, tuple)) else batch["answer"]
+    a_entity = [p[0] for p in batch["a_entity"]] if isinstance(batch["a_entity"], (list, tuple)) and len(batch["a_entity"]) > 0 and isinstance(batch["a_entity"][0], (list, tuple)) else batch["a_entity"]
+    q_entity = [p[0] for p in batch["q_entity"]] if isinstance(batch["q_entity"], (list, tuple)) and len(batch["q_entity"]) > 0 and isinstance(batch["q_entity"][0], (list, tuple)) else batch["q_entity"]
+
+    return {
+        "question": question,
+        "answer": answer,
+        "a_entity": a_entity,
+        "q_entity": q_entity,
+    }
+
+
+def format_relation(rel: str) -> str:
+    """Convert 'award.award_nomination.award_nominee' to 'award award nomination award nominee'."""
+    return rel.replace('.', ' ').replace('_', ' ')
+
+
 def generate_selected_json(
-    data: List[Dict[str, Any]],
-    model: PathRankingModel,
+    dataloader: DataLoader,
+    model: nn.Module,
     output_dir: str,
     k: int,
     retriever_type: str = "kgscout",
     device: str = "cuda"
 ) -> str:
     """
-    Generate selected triplets JSON file for all samples.
-    
-    This function creates a JSON file containing the top-k selected triplets
-    for each question in the dataset, following the format used by lama-inference.py.
-    
+    Generate selected triplets JSON file from a DataLoader.
+
+    Iterates over a DataLoader(batch_size=1), runs model inference to select top-k
+    triplets per question, and saves results in the standard format used by
+    LLM inference scripts.
+
     Args:
-        data: List of dataset samples
-        model: Trained PathRankingModel (required if retriever_type='kgscout')
-        output_dir: Directory to save selected triplets JSON
+        dataloader: DataLoader(batch_size=1) over SampledJointTrainingDataset
+        model: Trained model (PathRankingModel or ablation variant). Required if retriever_type='kgscout'.
+        output_dir: Directory to save selected_triplets.json
         k: Number of top triplets to select per question
         retriever_type: 'kgscout' or 'cosine'
         device: Device to run model on
-    
+
     Returns:
         Path to saved selected_triplets.json file
-    
-    Requirements:
-        - 10.1: Use the generate_selected_json method to select triplets when retriever-type is "kgscout"
-        - 10.2: Extract triplets from the topk_linearized_triplets dataset field when retriever-type is "cosine"
-        - 10.3: Ensure both retriever methods produce Selected_JSON in the same format
-        - 10.5: Log the error with question ID and continue processing when triplet selection fails
     """
-    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Prepare output data
+
     selected_data = []
     errors = []
-    
-    for idx, sample in enumerate(tqdm(data, desc=f"Selecting triplets ({retriever_type})")):
+
+    if model is not None:
+        model.eval()
+
+    for idx, batch in enumerate(tqdm(dataloader, desc=f"Selecting triplets ({retriever_type})")):
         try:
             # Select triplets based on retriever type
             if retriever_type == "kgscout":
-                selected_triplets = select_triplets_kgscout(model, sample, k, device)
+                selected_triplets = select_triplets_kgscout(model, batch, k, device)
             elif retriever_type == "cosine":
-                selected_triplets = select_triplets_cosine(sample, k)
+                selected_triplets = select_triplets_cosine(batch, k)
             else:
                 raise ValueError(f"Invalid retriever_type: {retriever_type}")
-            
-            # Get scores for selected triplets
-            if retriever_type == "kgscout":
-                # Use model scores
-                question_embed = sample["question_embedding"].to(device)
-                triplet_embeds = sample["topk_linearized_triplet_embeddings"].squeeze(0).to(device)
-                relation_embeds = sample["topK_rel_embeddings"].squeeze(0).to(device)
-                graph_features = sample["graph_features"].to(device)
-                
-                with torch.no_grad():
-                    ranking_scores, _ = model(
-                        question_embed,
-                        triplet_embeds,
-                        relation_embeds,
-                        graph_features
-                    )
-                
-                # Get scores for selected triplets
-                all_triplets = [triplet for _, triplet in sample["topk_rel_data"]]
-                triplet_to_score = {
-                    triplet: ranking_scores.squeeze()[i].item()
-                    for i, triplet in enumerate(all_triplets)
-                }
-                scores = [triplet_to_score.get(triplet, 0.0) for triplet in selected_triplets]
-            else:
-                # Use cosine scores from dataset
-                triplet_to_score = {triplet: score for score, triplet in sample["topk_rel_data"]}
-                scores = [triplet_to_score.get(triplet, 0.0) for triplet in selected_triplets]
-            
+
+            # Extract metadata from batch
+            meta = _extract_metadata_from_batch(batch)
+
             # Format as linearized strings for LLM inference
             linearized_triplets = [
-                f"{s}, {r}, {o}" for s, r, o in selected_triplets
+                f"{s}, {format_relation(r)}, {o}" for s, r, o in selected_triplets
             ]
-            
+
             # Create output entry following lama-inference.py format
             entry = {
-                "question": sample["question"],
-                "answer": sample["answer"],
-                "a_entity": sample["a_entity"],
-                "reranker": linearized_triplets  # List of linearized triplet strings
+                "question": meta["question"],
+                "answer": meta["answer"],
+                "a_entity": meta["a_entity"],
+                "q_entity": meta["q_entity"],
+                "reranker": linearized_triplets,
             }
-            
+
             selected_data.append(entry)
-            
+
         except Exception as e:
-            # Log error and continue processing
             error_msg = f"Question ID {idx}: Failed to select triplets. Error: {str(e)}"
             errors.append(error_msg)
             print(f"Warning: {error_msg}")
-            
+
             # Add empty entry to maintain alignment
+            try:
+                meta = _extract_metadata_from_batch(batch)
+            except Exception:
+                meta = {"question": "", "answer": [], "a_entity": [], "q_entity": []}
+
             entry = {
-                "question": sample.get("question", ""),
-                "answer": sample.get("answer", []),
-                "a_entity": sample.get("a_entity", []),
-                "reranker": []
+                "question": meta["question"],
+                "answer": meta["answer"],
+                "a_entity": meta["a_entity"],
+                "q_entity": meta["q_entity"],
+                "reranker": [],
             }
             selected_data.append(entry)
-    
+
     # Save to JSON file
     output_path = os.path.join(output_dir, "selected_triplets.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(selected_data, f, indent=2, ensure_ascii=False)
-    
+
     # Report errors if any
     if errors:
         print(f"\nWarning: {len(errors)} errors occurred during triplet selection:")
-        for error in errors[:5]:  # Show first 5 errors
+        for error in errors[:5]:
             print(f"  - {error}")
         if len(errors) > 5:
             print(f"  ... and {len(errors) - 5} more errors")
-    
+
     return output_path
 
 
@@ -267,8 +311,11 @@ if __name__ == "__main__":
     import sys
     import argparse
     import torch as _torch
+    from torch.utils.data import DataLoader as _DataLoader
 
     from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+    from src.preprocess.sampled_dataset import SampledJointTrainingDataset
+    from src.model.path_ranker import PathRankingModel
 
     # Allow loading datasets saved from notebooks
     import __main__ as _main
@@ -285,6 +332,8 @@ if __name__ == "__main__":
                         help="Output directory for selected_triplets.json")
     parser.add_argument("--top-k", type=int, default=100,
                         help="Number of triplets to select per sample (default: 100)")
+    parser.add_argument("--sample-k", type=int, default=1000,
+                        help="Number of triplets to feed to model per sample (default: 1000)")
     parser.add_argument("--retriever", type=str, default="kgscout",
                         choices=["kgscout", "cosine"],
                         help="Retriever type (default: kgscout)")
@@ -310,6 +359,7 @@ if __name__ == "__main__":
     print(f"  Test data: {args.test_data}")
     print(f"  Output:    {args.output_dir}")
     print(f"  Top-k:     {args.top_k}")
+    print(f"  Sample-k:  {args.sample_k}")
     print(f"  Retriever: {args.retriever}")
     print(f"  Device:    {device}")
     print("=" * 70)
@@ -324,26 +374,27 @@ if __name__ == "__main__":
             model.load_state_dict(ckpt["model_state_dict"])
         else:
             # save_pretrained format (component-level state dicts)
-            model.question_triplet_attention.load_state_dict(ckpt['question_triplet_attention'])
-            model.question_relation_attention.load_state_dict(ckpt['question_relation_attention'])
-            model.gate_network.load_state_dict(ckpt['gate_network'])
-            model.triplet_mlp.load_state_dict(ckpt['triplet_mlp'])
-            model.relation_mlp.load_state_dict(ckpt['relation_mlp'])
-            model.combiner_mlp.load_state_dict(ckpt['combiner_mlp'])
-            model.temperature.data = ckpt['temperature'].to(device)
-            model.baseline.data = ckpt['baseline'].to(device)
+            for key, val in ckpt.items():
+                if key in ('temperature', 'baseline'):
+                    getattr(model, key).data = val.to(device)
+                elif hasattr(model, key):
+                    getattr(model, key).load_state_dict(val)
         model.to(device)
         model.eval()
         print("  Model loaded.")
 
-    # Load test data
+    # Load test data and create DataLoader
     print("Loading test data...")
     test_data = _torch.load(args.test_data, weights_only=False, map_location="cpu")
     print(f"  Test samples: {len(test_data)}")
 
+    # Wrap in SampledJointTrainingDataset + DataLoader (consistent with ablation-2 pattern)
+    test_dataset = SampledJointTrainingDataset(test_data, k=args.sample_k)
+    test_dataloader = _DataLoader(test_dataset, batch_size=1, shuffle=False)
+
     # Generate selected_triplets.json
     output_path = generate_selected_json(
-        data=test_data,
+        dataloader=test_dataloader,
         model=model,
         output_dir=args.output_dir,
         k=args.top_k,

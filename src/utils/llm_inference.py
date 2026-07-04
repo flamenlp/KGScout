@@ -638,3 +638,7 @@ def load_llm_model(
     print(f"Model loaded successfully on device: {model.device}")
     
     return model, tokenizer
+
+
+# Backward-compatibility alias (format_prompt_v5 was renamed to format_prompt)
+format_prompt_v5 = format_prompt

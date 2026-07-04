@@ -6,371 +6,268 @@ This service analyzes the quality of triplet selection by measuring:
 - Path coverage: Whether complete reasoning paths exist in selected triplets
 
 The service compares KGscout retriever against cosine retriever across different k values.
+Uses DataLoader(batch_size=1) pattern consistent with the rest of the project.
 """
 
 import os
+import json
 import torch
+import torch.nn as nn
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.utils.evaluation_utils import load_dataset, load_model_checkpoint
-from src.utils.triplet_selector import select_triplets_kgscout, select_triplets_cosine
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.sampled_dataset import SampledJointTrainingDataset
+from src.utils.triplet_selector import (
+    select_triplets_kgscout, select_triplets_cosine, _extract_metadata_from_batch
+)
 from src.utils.metrics import compute_answer_coverage, compute_path_coverage
 
 
 class CoverageAnalysisService:
     """
     Service for path and answer coverage analysis.
-    
-    This service evaluates retriever quality independent of LLM performance by
-    measuring whether selected triplets contain answer entities and complete
-    reasoning paths.
-    
-    Requirements:
-        - 3.1: Compute Answer_Coverage and Path_Coverage for each specified k-value
-        - 3.2: Compare KGscout retriever against Cosine_Retriever for each k-value
-        - 3.3: Check if answer entities exist in the selected triplets
-        - 3.4: Check if a complete Reasoning_Path exists in the selected triplets
-        - 3.5: Generate a comparison table showing coverage metrics for both retrievers
-        - 3.6: Save detailed per-question results and summary statistics to JSON files
-        - 3.7: Display error message and exit when model-path does not exist
+
+    Evaluates retriever quality independent of LLM performance by measuring whether
+    selected triplets contain answer entities and complete reasoning paths.
+
+    Uses DataLoader(batch_size=1, default collate) for data iteration.
+
+    Results saved to: results/coverage-analysis/{dataset}/{kval}/
     """
-    
+
     def __init__(self, device: str = None):
         """
         Initialize service with device configuration.
-        
+
         Args:
             device: Target device ('cuda' or 'cpu'). Auto-detects if None.
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    
-    def _load_dataset(self, dataset: str) -> List[Dict]:
+
+    def _create_dataloader(self, dataset_path: str, sample_k: int = 1000) -> DataLoader:
         """
-        Load dataset using evaluation_utils.
-        
+        Load dataset and create DataLoader(batch_size=1).
+
         Args:
-            dataset: Dataset name ('webqsp' or 'cwq')
-        
+            dataset_path: Path to .pt dataset file
+            sample_k: Number of triplets to sample per question
+
         Returns:
-            List of dataset samples
+            DataLoader iterating one sample at a time
         """
-        return load_dataset(dataset)
-    
-    def _select_with_kgscout(
-        self,
-        data: List[Dict],
-        model,
-        k: int
-    ) -> List[List[Tuple[str, str, str]]]:
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(
+                f"Dataset file not found: {dataset_path}\n"
+                f"Please ensure the dataset has been preprocessed."
+            )
+
+        data = torch.load(dataset_path, weights_only=False, map_location="cpu")
+        print(f"  Loaded {len(data)} samples from {dataset_path}")
+
+        dataset = SampledJointTrainingDataset(data, k=sample_k)
+        return DataLoader(dataset, batch_size=1, shuffle=False)
+
+    def _load_model(self, model_path: str) -> nn.Module:
         """
-        Select triplets using KGscout model for all questions.
-        
+        Load model from checkpoint directory (save_pretrained format).
+
         Args:
-            data: List of dataset samples
-            model: Trained PathRankingModel
+            model_path: Path to model checkpoint directory containing path_ranker.pt
+
+        Returns:
+            Loaded model
+        """
+        from src.model.path_ranker import PathRankingModel
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Model path not found: {model_path}\n"
+                f"Please ensure the model was trained and saved correctly."
+            )
+
+        model = PathRankingModel.from_pretrained(model_path, device=self.device)
+        model.to(self.device)
+        model.eval()
+        print(f"  Model loaded from {model_path}")
+        return model
+
+    def _evaluate_coverage(
+        self,
+        dataloader: DataLoader,
+        model: nn.Module,
+        k: int,
+        retriever_type: str = "kgscout"
+    ) -> Dict[str, Any]:
+        """
+        Evaluate answer and path coverage on the given DataLoader.
+
+        Args:
+            dataloader: DataLoader(batch_size=1) over test dataset
+            model: Trained model (used if retriever_type='kgscout')
             k: Number of top triplets to select
-        
+            retriever_type: 'kgscout' or 'cosine'
+
         Returns:
-            List of triplet lists (one per question)
+            Dict with coverage metrics and per-sample results
         """
-        triplets_per_question = []
-        failed_count = 0
-        
-        for sample in tqdm(data, desc=f"Selecting with KGscout (k={k})", unit="question"):
+        ans_present_count = 0
+        path_exists_count = 0
+        total_count = 0
+        per_sample_results = []
+
+        for i, batch in enumerate(tqdm(dataloader, desc=f"  Coverage ({retriever_type}, k={k})")):
             try:
-                triplets = select_triplets_kgscout(model, sample, k, self.device)
-                triplets_per_question.append(triplets)
+                # Select triplets
+                if retriever_type == "kgscout":
+                    selected_triplets = select_triplets_kgscout(model, batch, k, self.device)
+                else:
+                    selected_triplets = select_triplets_cosine(batch, k)
+
+                if len(selected_triplets) == 0:
+                    continue
+
+                # Extract metadata
+                meta = _extract_metadata_from_batch(batch)
+                q_ents = [e.lower() for e in meta["q_entity"]] if meta["q_entity"] else []
+                a_ents = [e.lower() for e in meta["a_entity"]] if meta["a_entity"] else []
+
+                if not a_ents:
+                    continue
+
+                # Compute coverage metrics
+                ans_present = compute_answer_coverage(selected_triplets, a_ents)
+                path_exists = compute_path_coverage(selected_triplets, q_ents, a_ents)
+
+                if ans_present:
+                    ans_present_count += 1
+                if path_exists:
+                    path_exists_count += 1
+
+                total_count += 1
+
+                per_sample_results.append({
+                    "id": i,
+                    "question": meta["question"],
+                    "answer_entity_present": ans_present,
+                    "reasoning_path_exists": path_exists,
+                    "num_selected_triplets": len(selected_triplets),
+                })
+
             except Exception as e:
-                failed_count += 1
-                print(f"\nWarning: Failed to select triplets for question. Error: {str(e)}")
-                triplets_per_question.append([])
-        
-        if failed_count > 0:
-            print(f"\nWarning: {failed_count} out of {len(data)} questions failed during KGscout selection")
-        
-        return triplets_per_question
-    
-    def _select_with_cosine(
-        self,
-        data: List[Dict],
-        k: int
-    ) -> List[List[Tuple[str, str, str]]]:
-        """
-        Select triplets using cosine similarity for all questions.
-        
-        Args:
-            data: List of dataset samples
-            k: Number of top triplets to select
-        
-        Returns:
-            List of triplet lists (one per question)
-        """
-        triplets_per_question = []
-        failed_count = 0
-        
-        for sample in tqdm(data, desc=f"Selecting with Cosine (k={k})", unit="question"):
-            try:
-                triplets = select_triplets_cosine(sample, k)
-                triplets_per_question.append(triplets)
-            except Exception as e:
-                failed_count += 1
-                print(f"\nWarning: Failed to select triplets for question. Error: {str(e)}")
-                triplets_per_question.append([])
-        
-        if failed_count > 0:
-            print(f"\nWarning: {failed_count} out of {len(data)} questions failed during Cosine selection")
-        
-        return triplets_per_question
-    
-    def _compute_coverage_metrics(
-        self,
-        data: List[Dict],
-        triplets_per_question: List[List[Tuple[str, str, str]]]
-    ) -> Dict[str, float]:
-        """
-        Compute answer and path coverage metrics.
-        
-        Args:
-            data: List of dataset samples
-            triplets_per_question: List of triplet lists (one per question)
-        
-        Returns:
-            Dictionary with answer_coverage and path_coverage percentages
-        """
-        answer_coverage_count = 0
-        path_coverage_count = 0
-        
-        for question_data, triplets in zip(data, triplets_per_question):
-            # Check answer coverage
-            if compute_answer_coverage(triplets, question_data['a_entity']):
-                answer_coverage_count += 1
-            
-            # Check path coverage
-            if compute_path_coverage(triplets, question_data['q_entity'], question_data['a_entity']):
-                path_coverage_count += 1
-        
-        total_questions = len(data)
-        return {
-            'answer_coverage': answer_coverage_count / total_questions if total_questions > 0 else 0.0,
-            'path_coverage': path_coverage_count / total_questions if total_questions > 0 else 0.0,
-            'answer_coverage_count': answer_coverage_count,
-            'path_coverage_count': path_coverage_count,
-            'total_questions': total_questions
+                continue
+
+        if total_count == 0:
+            return {"total_samples": 0, "per_sample_results": []}
+
+        metrics = {
+            "total_samples": total_count,
+            "answer_coverage": ans_present_count / total_count,
+            "path_coverage": path_exists_count / total_count,
+            "answer_coverage_count": ans_present_count,
+            "path_coverage_count": path_exists_count,
+            "per_sample_results": per_sample_results,
         }
-    
-    def _generate_coverage_comparison(self, results: Dict[str, Dict[int, Dict]]) -> str:
-        """
-        Generate comparison table for coverage metrics.
-        
-        Args:
-            results: Dictionary with structure {retriever: {k: metrics}}
-        
-        Returns:
-            Formatted comparison table string
-        """
-        # Get all k values (sorted)
-        k_values = sorted(list(results['kgscout'].keys()))
-        
-        # Build table header
-        table = "\n" + "=" * 80 + "\n"
-        table += "COVERAGE ANALYSIS COMPARISON\n"
-        table += "=" * 80 + "\n\n"
-        
-        # Build table rows
-        table += f"{'K Value':<10} {'Retriever':<12} {'Answer Cov':<15} {'Path Cov':<15}\n"
-        table += "-" * 80 + "\n"
-        
-        for k in k_values:
-            # KGscout row
-            kgscout_metrics = results['kgscout'][k]
-            table += f"{k:<10} {'KGscout':<12} "
-            table += f"{kgscout_metrics['answer_coverage']:.2%}".ljust(15)
-            table += f"{kgscout_metrics['path_coverage']:.2%}".ljust(15)
-            table += "\n"
-            
-            # Cosine row
-            cosine_metrics = results['cosine'][k]
-            table += f"{'':<10} {'Cosine':<12} "
-            table += f"{cosine_metrics['answer_coverage']:.2%}".ljust(15)
-            table += f"{cosine_metrics['path_coverage']:.2%}".ljust(15)
-            table += "\n"
-            
-            # Difference row
-            answer_diff = kgscout_metrics['answer_coverage'] - cosine_metrics['answer_coverage']
-            path_diff = kgscout_metrics['path_coverage'] - cosine_metrics['path_coverage']
-            table += f"{'':<10} {'Difference':<12} "
-            table += f"{answer_diff:+.2%}".ljust(15)
-            table += f"{path_diff:+.2%}".ljust(15)
-            table += "\n"
-            table += "-" * 80 + "\n"
-        
-        table += "=" * 80 + "\n"
-        
-        return table
-    
-    def _save_coverage_results(
-        self,
-        results: Dict[str, Dict[int, Dict]],
-        comparison_table: str,
-        output_dir: str,
-        dataset: str,
-        k_values: List[int]
-    ) -> str:
-        """
-        Save coverage results with summary JSON only (no per-question results).
-        
-        Args:
-            results: Dictionary with structure {retriever: {k: metrics}}
-            comparison_table: Formatted comparison table string
-            output_dir: Directory to save results
-            dataset: Dataset name
-            k_values: List of k values tested
-        
-        Returns:
-            Path to saved results file
-        
-        Requirements:
-            - 8.1: Save results to the specified output directory
-            - 8.2: Include timestamps in all output filenames
-            - 8.5: Create output directory if it doesn't exist
-            - 8.7: Validate all output files were written successfully
-        """
-        # Create output directory if it doesn't exist
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except Exception as e:
-            raise IOError(
-                f"Failed to create output directory: {output_dir}\n"
-                f"Error: {str(e)}"
-            )
-        
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"coverage_analysis_{timestamp}.json"
-        filepath = os.path.join(output_dir, filename)
-        
-        # Prepare results dictionary
-        output_data = {
-            "metadata": {
-                "timestamp": timestamp,
-                "dataset": dataset,
-                "k_values": k_values
-            },
-            "results": results,
-            "comparison_table": comparison_table
-        }
-        
-        # Save to JSON file
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            raise IOError(
-                f"Failed to write results file: {filepath}\n"
-                f"Error: {str(e)}"
-            )
-        
-        # Validate file was written successfully
-        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-            raise IOError(
-                f"Results file was not created successfully: {filepath}"
-            )
-        
-        return filepath
-    
+        return metrics
+
     def run_coverage_analysis(
         self,
-        dataset: str,
+        dataset_path: str,
         model_path: str,
         k_values: List[int],
-        output_dir: str = None
+        dataset_name: str = "cwq",
+        output_dir: str = None,
+        sample_k: int = 1000,
     ) -> Dict[str, Any]:
         """
         Analyze answer and path coverage for different k values.
-        
-        This method orchestrates the full coverage analysis pipeline:
-        1. Load dataset and model
-        2. For each k value:
-           - Select triplets with KGscout
-           - Select triplets with Cosine
-           - Compute coverage metrics for both
-        3. Generate comparison table
-        4. Save results
-        
+
+        Pipeline:
+        1. Load test DataLoader
+        2. Load model
+        3. For each k value, compute coverage for both KGscout and Cosine
+        4. Generate comparison table
+        5. Save results to results/coverage-analysis/{dataset}/{kval}/
+
         Args:
-            dataset: Dataset name ('webqsp' or 'cwq')
-            model_path: Path to KGscout model
+            dataset_path: Path to test .pt dataset file
+            model_path: Path to model checkpoint directory
             k_values: List of k values to test
-            output_dir: Directory to save results (default: 'results/coverage')
-        
+            dataset_name: Dataset name for output directory (default: 'cwq')
+            output_dir: Base output directory (default: 'results/coverage-analysis')
+            sample_k: Number of triplets to feed to model (default: 1000)
+
         Returns:
-            Dictionary with coverage metrics for both retrievers and output file path
-        
-        Requirements:
-            - 3.1: Compute Answer_Coverage and Path_Coverage for each specified k-value
-            - 3.2: Compare KGscout retriever against Cosine_Retriever for each k-value
-            - 3.5: Generate a comparison table showing coverage metrics
-            - 3.6: Save summary statistics to JSON files
-            - 3.7: Display error message when model-path does not exist
+            Dictionary with coverage metrics for both retrievers
         """
-        # Set default output directory
         if output_dir is None:
-            output_dir = "results/coverage"
-        
-        # Load dataset
-        print(f"\nLoading dataset: {dataset}")
-        data = self._load_dataset(dataset)
-        print(f"Loaded {len(data)} questions")
-        
-        # Load model (this will raise FileNotFoundError if model doesn't exist)
-        print(f"\nLoading model from: {model_path}")
-        model = load_model_checkpoint(model_path, self.device)
-        
-        # Initialize results structure
-        results = {
-            'kgscout': {},
-            'cosine': {}
-        }
-        
-        # Analyze coverage for each k value
-        for idx, k in enumerate(k_values, 1):
+            output_dir = "results/coverage-analysis"
+
+        print(f"\n{'='*60}")
+        print("COVERAGE ANALYSIS")
+        print(f"{'='*60}")
+        print(f"  Dataset: {dataset_path}")
+        print(f"  Model:   {model_path}")
+        print(f"  K values: {k_values}")
+
+        # Load DataLoader and model
+        print("\nLoading data...")
+        dataloader = self._create_dataloader(dataset_path, sample_k=sample_k)
+
+        print("Loading model...")
+        model = self._load_model(model_path)
+
+        results = {"kgscout": {}, "cosine": {}}
+
+        for k in k_values:
             print(f"\n{'='*60}")
-            print(f"Analyzing coverage for k={k} ({idx}/{len(k_values)})")
+            print(f"  k = {k}")
             print(f"{'='*60}")
-            
+
             # KGscout coverage
-            print(f"\nKGscout retriever:")
-            kgscout_triplets = self._select_with_kgscout(data, model, k)
-            results['kgscout'][k] = self._compute_coverage_metrics(data, kgscout_triplets)
-            print(f"  Answer Coverage: {results['kgscout'][k]['answer_coverage']:.2%} ({results['kgscout'][k]['answer_coverage_count']}/{results['kgscout'][k]['total_questions']})")
-            print(f"  Path Coverage:   {results['kgscout'][k]['path_coverage']:.2%} ({results['kgscout'][k]['path_coverage_count']}/{results['kgscout'][k]['total_questions']})")
-            
+            kgscout_metrics = self._evaluate_coverage(dataloader, model, k, "kgscout")
+            results["kgscout"][k] = kgscout_metrics
+            print(f"  KGscout — Answer: {kgscout_metrics['answer_coverage']:.2%}, Path: {kgscout_metrics['path_coverage']:.2%}")
+
             # Cosine coverage
-            print(f"\nCosine retriever:")
-            cosine_triplets = self._select_with_cosine(data, k)
-            results['cosine'][k] = self._compute_coverage_metrics(data, cosine_triplets)
-            print(f"  Answer Coverage: {results['cosine'][k]['answer_coverage']:.2%} ({results['cosine'][k]['answer_coverage_count']}/{results['cosine'][k]['total_questions']})")
-            print(f"  Path Coverage:   {results['cosine'][k]['path_coverage']:.2%} ({results['cosine'][k]['path_coverage_count']}/{results['cosine'][k]['total_questions']})")
-        
-        # Generate comparison table
-        comparison_table = self._generate_coverage_comparison(results)
-        print(comparison_table)
-        
-        # Save results
-        output_file = self._save_coverage_results(
-            results,
-            comparison_table,
-            output_dir,
-            dataset,
-            k_values
-        )
-        
-        print(f"\nResults saved to: {output_file}")
-        
-        return {
-            'results': results,
-            'comparison_table': comparison_table,
-            'output_file': output_file
-        }
+            cosine_metrics = self._evaluate_coverage(dataloader, None, k, "cosine")
+            results["cosine"][k] = cosine_metrics
+            print(f"  Cosine  — Answer: {cosine_metrics['answer_coverage']:.2%}, Path: {cosine_metrics['path_coverage']:.2%}")
+
+            # Save per-k results
+            k_output_dir = os.path.join(output_dir, dataset_name, str(k))
+            os.makedirs(k_output_dir, exist_ok=True)
+
+            summary = {
+                "k": k,
+                "kgscout": {key: val for key, val in kgscout_metrics.items() if key != "per_sample_results"},
+                "cosine": {key: val for key, val in cosine_metrics.items() if key != "per_sample_results"},
+            }
+            with open(os.path.join(k_output_dir, "coverage_metrics.json"), "w") as f:
+                json.dump(summary, f, indent=2)
+
+        # Print comparison table
+        self._print_comparison_table(results, k_values)
+
+        # Cleanup
+        del model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+        return results
+
+    def _print_comparison_table(self, results: Dict, k_values: List[int]):
+        """Print formatted comparison table."""
+        print(f"\n{'='*80}")
+        print("COVERAGE COMPARISON TABLE")
+        print(f"{'='*80}")
+        print(f"{'K':<8} {'Retriever':<12} {'Answer Cov':<15} {'Path Cov':<15}")
+        print("-" * 50)
+        for k in k_values:
+            kg = results["kgscout"][k]
+            cos = results["cosine"][k]
+            print(f"{k:<8} {'KGscout':<12} {kg['answer_coverage']:.2%}{'':>7} {kg['path_coverage']:.2%}")
+            print(f"{'':8} {'Cosine':<12} {cos['answer_coverage']:.2%}{'':>7} {cos['path_coverage']:.2%}")
+            print("-" * 50)
+        print(f"{'='*80}\n")

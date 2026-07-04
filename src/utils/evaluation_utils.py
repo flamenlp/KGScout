@@ -16,6 +16,42 @@ from typing import List, Dict, Any
 from src.model.path_ranker import PathRankingModel
 
 
+DATASET_PATHS = {
+    'webqsp': 'dataset/processed-dataset/webqsp-tst.pt',
+    'cwq': 'dataset/processed-dataset/cwq-tst.pt'
+}
+
+
+def get_dataset_path(dataset_name: str) -> str:
+    """
+    Get the file path for a dataset by name.
+
+    Args:
+        dataset_name: Dataset identifier ('webqsp' or 'cwq')
+
+    Returns:
+        File path to the dataset .pt file
+
+    Raises:
+        ValueError: If dataset name is invalid
+        FileNotFoundError: If dataset file does not exist
+    """
+    if dataset_name not in DATASET_PATHS:
+        raise ValueError(
+            f"Invalid dataset name: '{dataset_name}'. "
+            f"Expected one of: {list(DATASET_PATHS.keys())}"
+        )
+
+    path = DATASET_PATHS[dataset_name]
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Dataset file not found: {path}\n"
+            f"Please ensure the dataset has been preprocessed and saved to the expected location."
+        )
+
+    return path
+
+
 def load_dataset(dataset_name: str) -> List[Dict]:
     """
     Load preprocessed dataset by name.
@@ -38,10 +74,7 @@ def load_dataset(dataset_name: str) -> List[Dict]:
         - 5.5: Validate that loaded dataset contains required fields
     """
     # Map dataset names to file paths
-    dataset_paths = {
-        'webqsp': 'dataset/processed-dataset/webqsp-tst.pt',
-        'cwq': 'dataset/processed-dataset/cwq-tst.pt'
-    }
+    dataset_paths = DATASET_PATHS
     
     # Validate dataset name
     if dataset_name not in dataset_paths:
