@@ -242,7 +242,8 @@ class TrainService:
         weight_decay: float,
         gradient_accumulation_steps: int,
         validation_interval: int,
-        early_stopping_patience: int
+        early_stopping_patience: int,
+        sample_k: int = 1000
     ) -> Dict[str, str]:
         """
         Run main training phase.
@@ -252,7 +253,7 @@ class TrainService:
             train_base_dataset: Base training dataset
             val_base_dataset: Base validation dataset
             checkpoint_dir: Directory to save checkpoints
-            k: Number of triplets to sample
+            k: Number of top triplets to select per question (selection size)
             num_epochs: Number of epochs
             learning_rate: Learning rate
             warmup_steps: Warmup steps
@@ -260,6 +261,9 @@ class TrainService:
             gradient_accumulation_steps: Gradient accumulation steps
             validation_interval: Validation interval
             early_stopping_patience: Early stopping patience
+            sample_k: Number of triplets to prefilter per question (pool size).
+                      The model sees sample_k triplets and selects the top-k from them.
+                      Default: 1000 (consistent with all ablation studies).
         
         Returns:
             Dictionary with paths to checkpoints and logs
@@ -267,11 +271,13 @@ class TrainService:
         print("\n" + "=" * 60)
         print("PHASE 3: MAIN TRAINING")
         print("=" * 60)
-        print(f"Configuration: k={k}, {num_epochs} epochs")
+        print(f"Configuration: N={sample_k} (pool), k={k} (selection), {num_epochs} epochs")
         
         # Create main training datasets
-        main_train_dataset = SampledJointTrainingDataset(train_base_dataset, k=k)
-        main_val_dataset = SampledJointTrainingDataset(val_base_dataset, k=k)
+        # sample_k controls the prefiltered pool size (N=1000 by default)
+        # k controls how many triplets the model selects from the pool during REINFORCE
+        main_train_dataset = SampledJointTrainingDataset(train_base_dataset, k=sample_k)
+        main_val_dataset = SampledJointTrainingDataset(val_base_dataset, k=sample_k)
         
         # Create dataloaders
         collate_fn = self._create_collate_fn()
@@ -338,7 +344,8 @@ class TrainService:
         weight_decay: float = 1e-5,
         gradient_accumulation_steps: int = 8,
         validation_interval: int = 1,
-        early_stopping_patience: int = 10
+        early_stopping_patience: int = 10,
+        sample_k: int = 1000
     ) -> Dict[str, Any]:
         """
         Execute complete training pipeline.
@@ -347,7 +354,7 @@ class TrainService:
             train_data_path: Path to training data
             val_data_path: Path to validation data
             checkpoint_dir: Directory to save checkpoints
-            k: K value for main training
+            k: K value for top-k selection during REINFORCE training
             num_epochs: Number of epochs for main training
             learning_rate: Learning rate
             warmup_steps: Warmup steps
@@ -355,6 +362,9 @@ class TrainService:
             gradient_accumulation_steps: Gradient accumulation steps
             validation_interval: Validation interval
             early_stopping_patience: Early stopping patience
+            sample_k: Pool size (N) — number of prefiltered triplets per question.
+                      The model sees sample_k triplets and selects top-k from them.
+                      Default: 1000 (consistent with all ablation studies).
         
         Returns:
             Dictionary with training results and paths
@@ -394,7 +404,8 @@ class TrainService:
             weight_decay,
             gradient_accumulation_steps,
             validation_interval,
-            early_stopping_patience
+            early_stopping_patience,
+            sample_k
         )
         
         return {

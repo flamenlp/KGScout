@@ -138,21 +138,18 @@ k-ablation-cosine dataset:
     echo "  Test data: $TEST"                                           | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
+    # ---- PHASE 1: Generate all triplet files ----
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 1: Triplet selection (all k-values)" | tee -a "$LOG"
+
     for K in $K_VALUES; do
-
-        echo "" | tee -a "$LOG"
-        echo "------------------------------------------------------------" | tee -a "$LOG"
-        echo "  K=$K (cosine top-k selection + vLLM inference)"             | tee -a "$LOG"
-        echo "------------------------------------------------------------" | tee -a "$LOG"
-
-        # ---- STEP 1: Triplet selection (cosine — no model needed) ----
         TRIPLET_DIR="$BASE/k${K}/triplet-analysis"
         TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
 
         if [ -f "$TRIPLET_FILE" ]; then
-            echo "  [k=$K] STEP 1: selected_triplets.json exists. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] selected_triplets.json exists. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] STEP 1: Generating cosine triplets (top-k=$K)..." | tee -a "$LOG"
+            echo "  [k=$K] Generating cosine triplets (top-k=$K)..." | tee -a "$LOG"
             python -m src.utils.triplet_selector \
                 --test-data "$TEST" \
                 --output-dir "$TRIPLET_DIR" \
@@ -160,17 +157,23 @@ k-ablation-cosine dataset:
                 --retriever cosine \
                 2>&1 | tee -a "$LOG"
         fi
+    done
 
-        # ---- STEP 2: vLLM LLM Inference ----
+    # ---- PHASE 2: vLLM LLM Inference (all k-values) ----
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 2: vLLM inference (all k-values)" | tee -a "$LOG"
+
+    for K in $K_VALUES; do
+        TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
         RESULT_DIR="$BASE/k${K}/model-result"
         METRICS_FILE="$RESULT_DIR/llm_metrics.json"
 
         if [ -f "$METRICS_FILE" ]; then
-            echo "  [k=$K] STEP 2: LLM results exist. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] LLM results exist. Skipping." | tee -a "$LOG"
         elif [ ! -f "$TRIPLET_FILE" ]; then
-            echo "  [k=$K] STEP 2: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] STEP 2: Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            echo "  [k=$K] Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
             python run_vllm_inference_ablation.py \
                 --input "$TRIPLET_FILE" \
                 --output "$RESULT_DIR" \
@@ -178,7 +181,6 @@ k-ablation-cosine dataset:
                 --top-k $K \
                 2>&1 | tee -a "$LOG"
         fi
-
     done
 
     echo "" | tee -a "$LOG"

@@ -167,7 +167,7 @@ def evaluate_dataset_vllm(data, output_dir, llm, sampling_params, top_k):
     logger.info(f"    Built {len(prompts)} prompts from {len(data)} samples")
 
     # Step 2: Batch inference via vLLM (chunked for progress tracking)
-    CHUNK_SIZE = 100  # Process in chunks of 100 for progress visibility
+    CHUNK_SIZE = 800  # Process in chunks of 100 for progress visibility
     logger.info(f"    Running vLLM batch inference ({len(prompts)} prompts, chunks of {CHUNK_SIZE})...")
     t0 = time.time()
     outputs = []
