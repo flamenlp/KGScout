@@ -44,15 +44,20 @@ from src.utils.llm_inference import load_llm_model, format_prompt_v5, run_llm_in
 # ============================================================================
 # HARDCODED PATHS (for --dataset shorthand)
 # ============================================================================
+from src.utils.dir_config import load_config, get_results_dir, get_defaults
+
+_config = load_config()
+_defaults = get_defaults(_config)
+_ablation2_model_dir = get_results_dir("ablation2", "model_ablation", _config)
 
 DATASET_CONFIGS = {
     "cwq": {
-        "input": "./results/ablation-2/cwq/triplet-result/selected_triplets.json",
-        "output": "./results/ablation-2/cwq/llm-results/",
+        "input": os.path.join(_ablation2_model_dir, "..", "cwq", "triplet-result", "selected_triplets.json"),
+        "output": os.path.join(_ablation2_model_dir, "..", "cwq", "llm-results"),
     },
     "webqsp": {
-        "input": "./results/ablation-2/webqsp/triplet-result/selected_triplets.json",
-        "output": "./results/ablation-2/webqsp/llm-results/",
+        "input": os.path.join(_ablation2_model_dir, "..", "webqsp", "triplet-result", "selected_triplets.json"),
+        "output": os.path.join(_ablation2_model_dir, "..", "webqsp", "llm-results"),
     },
 }
 

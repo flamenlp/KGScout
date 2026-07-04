@@ -1,59 +1,54 @@
 # KGScout Experiment Runner
+# All paths are read from dir_mapping.yml
+#
 # Usage: just k-ablation cwq
 #        just k-ablation webqsp
 
 # ============================================================================
-# DATA PATHS
-# ============================================================================
-
-cwq_train := "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
-cwq_val   := "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
-cwq_test  := "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
-
-webqsp_train := "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
-webqsp_val   := "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
-webqsp_test  := "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
-
-# ============================================================================
-# K-ABLATION: Train k=30,50,100,150 → Triplet Analysis → LLM Inference
+# K-ABLATION: Train k=30,50,100,150 → Triplet Analysis → vLLM Inference
 # ============================================================================
 
 k-ablation dataset:
     #!/usr/bin/env bash
     set -e
 
-    if [ "{{dataset}}" = "cwq" ]; then
-        TRAIN="{{cwq_train}}"
-        VAL="{{cwq_val}}"
-        TEST="{{cwq_test}}"
-    elif [ "{{dataset}}" = "webqsp" ]; then
-        TRAIN="{{webqsp_train}}"
-        VAL="{{webqsp_val}}"
-        TEST="{{webqsp_test}}"
-    else
-        echo "ERROR: Invalid dataset '{{dataset}}'. Use 'cwq' or 'webqsp'."
+    # --- Read paths from dir_mapping.yml ---
+    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read dir_mapping.yml for dataset '{{dataset}}'"
         exit 1
     fi
 
-    BASE="results/k-ablation"
+    TRAIN=$(echo "$YAML_OUTPUT" | sed -n '1p')
+    VAL=$(echo "$YAML_OUTPUT" | sed -n '2p')
+    TEST=$(echo "$YAML_OUTPUT" | sed -n '3p')
+    K_VALUES=$(echo "$YAML_OUTPUT" | sed -n '4p')
+    BASE=$(echo "$YAML_OUTPUT" | sed -n '5p')
+    DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '6p')
+    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
+
     LOG="logs/k-ablation.log"
     mkdir -p logs
 
     echo "============================================================" | tee -a "$LOG"
-    echo "K-ABLATION: {{dataset}} | k=30,50,100,150"                    | tee -a "$LOG"
+    echo "K-ABLATION: {{dataset}} | k=$K_VALUES"                        | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
-    # ---- STEP 1: Train models for each k ----
-    echo "" | tee -a "$LOG"
-    echo ">>> STEP 1: Training models..." | tee -a "$LOG"
+    for K in $K_VALUES; do
 
-    for K in 30 50 100 150; do
+        echo "" | tee -a "$LOG"
+        echo "------------------------------------------------------------" | tee -a "$LOG"
+        echo "  K=$K (training, triplet selection, and inference all use top-k=$K)" | tee -a "$LOG"
+        echo "------------------------------------------------------------" | tee -a "$LOG"
+
+        # ---- STEP 1: Train model ----
         MODEL_DIR="$BASE/k${K}/model"
         CKPT="$MODEL_DIR/main_training_k${K}/best_model_k${K}.pt"
         if [ -f "$CKPT" ]; then
-            echo "  [k=$K] Model exists at $CKPT. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 1: Model exists at $CKPT. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] Training..." | tee -a "$LOG"
+            echo "  [k=$K] STEP 1: Training..." | tee -a "$LOG"
             python cli.py train \
                 --train-data "$TRAIN" \
                 --val-data "$VAL" \
@@ -63,23 +58,17 @@ k-ablation dataset:
                 --early-stopping-patience 10 \
                 2>&1 | tee -a "$LOG"
         fi
-    done
 
-    # ---- STEP 2: Triplet analysis for each k ----
-    echo "" | tee -a "$LOG"
-    echo ">>> STEP 2: Triplet analysis..." | tee -a "$LOG"
-
-    for K in 30 50 100 150; do
+        # ---- STEP 2: Triplet selection ----
         TRIPLET_DIR="$BASE/k${K}/triplet-analysis"
         TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
-        CKPT="$BASE/k${K}/model/main_training_k${K}/best_model_k${K}.pt"
 
         if [ -f "$TRIPLET_FILE" ]; then
-            echo "  [k=$K] selected_triplets.json exists. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 2: selected_triplets.json exists. Skipping." | tee -a "$LOG"
         elif [ ! -f "$CKPT" ]; then
-            echo "  [k=$K] ERROR: Model not found at $CKPT. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 2: ERROR: Model not found at $CKPT. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] Generating triplets..." | tee -a "$LOG"
+            echo "  [k=$K] STEP 2: Generating triplets (top-k=$K)..." | tee -a "$LOG"
             python -m src.utils.triplet_selector \
                 --model-path "$CKPT" \
                 --test-data "$TEST" \
@@ -87,30 +76,25 @@ k-ablation dataset:
                 --top-k $K \
                 2>&1 | tee -a "$LOG"
         fi
-    done
 
-    # ---- STEP 3: LLM Inference for each k ----
-    echo "" | tee -a "$LOG"
-    echo ">>> STEP 3: LLM Inference..." | tee -a "$LOG"
-
-    for K in 30 50 100 150; do
+        # ---- STEP 3: vLLM LLM Inference ----
         RESULT_DIR="$BASE/k${K}/model-result"
         METRICS_FILE="$RESULT_DIR/llm_metrics.json"
-        TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
 
         if [ -f "$METRICS_FILE" ]; then
-            echo "  [k=$K] LLM results exist. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 3: LLM results exist. Skipping." | tee -a "$LOG"
         elif [ ! -f "$TRIPLET_FILE" ]; then
-            echo "  [k=$K] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 3: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] Running LLM inference..." | tee -a "$LOG"
-            python ablation-2/run_inference.py \
+            echo "  [k=$K] STEP 3: Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            python run_vllm_inference_ablation.py \
                 --input "$TRIPLET_FILE" \
                 --output "$RESULT_DIR" \
-                --llm-model llama \
+                --llm-model "$LLM_MODEL" \
                 --top-k $K \
                 2>&1 | tee -a "$LOG"
         fi
+
     done
 
     echo "" | tee -a "$LOG"

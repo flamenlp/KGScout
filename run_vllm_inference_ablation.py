@@ -48,18 +48,26 @@ from src.utils.metrics import (
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-MODEL_MAP = {
-    "llama": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    "qwen": "Qwen/Qwen-7B-Chat",
-    "deepseek": "deepseek-ai/deepseek-llm-7b-chat",
-}
-MODEL_ABLATION_DIR = "./results/ablation-2/model-ablation"
-REWARD_ABLATION_DIR = "./results/reward-ablation"
-TOP_K = 100
-LOG_FILE = os.path.join("logs", "ablation_vllm_inference.log")
+from src.utils.dir_config import (
+    load_config, get_results_dir, get_llm_model_id,
+    get_model_variants, get_reward_variants, get_defaults, get_log_path,
+)
 
-MODEL_VARIANTS = ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
-REWARD_VARIANTS = ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
+_config = load_config()
+_defaults = get_defaults(_config)
+
+MODEL_MAP = {
+    "llama": get_llm_model_id("llama", _config),
+    "qwen": get_llm_model_id("qwen", _config),
+    "deepseek": get_llm_model_id("deepseek", _config),
+}
+MODEL_ABLATION_DIR = get_results_dir("ablation2", "model_ablation", _config)
+REWARD_ABLATION_DIR = get_results_dir("ablation2", "reward_ablation", _config)
+TOP_K = _defaults["top_k"]
+LOG_FILE = get_log_path("vllm_inference", _config)
+
+MODEL_VARIANTS = get_model_variants(_config)
+REWARD_VARIANTS = get_reward_variants(_config)
 
 # ============================================================================
 # LOGGING
@@ -278,7 +286,16 @@ def main():
         default="llama",
         choices=["llama", "qwen", "deepseek"],
     )
-    parser.add_argument("--top-k", type=int, default=TOP_K)
+    parser.add_argument("--top-k", type=int, default=TOP_K,
+                        help="Number of triplets to use per sample for LLM prompt (default: 100)")
+    parser.add_argument(
+        "--input", type=str, default=None,
+        help="Path to a specific selected_triplets.json file (single-file mode, skips variant scan)"
+    )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="Output directory for single-file mode results"
+    )
     parser.add_argument(
         "--gpu-memory-utilization",
         type=float,
@@ -350,6 +367,38 @@ def main():
 
     logger.info("  vLLM model loaded.")
 
+    # ---- Single-file mode: --input / --output ----
+    if args.input:
+        if not args.output:
+            logger.error("--output is required when using --input (single-file mode)")
+            sys.exit(1)
+        if not os.path.exists(args.input):
+            logger.error(f"Input file not found: {args.input}")
+            sys.exit(1)
+
+        logger.info(f"Single-file mode: input={args.input}, output={args.output}")
+        with open(args.input, "r") as f:
+            data = json.load(f)
+        logger.info(f"  Loaded {len(data)} samples")
+
+        metrics = evaluate_dataset_vllm(
+            data, args.output, llm, sampling_params, args.top_k
+        )
+        if metrics:
+            logger.info("\n" + "=" * 70)
+            logger.info("RESULTS")
+            logger.info("=" * 70)
+            logger.info(
+                f"Hit: {metrics['hit']:.2f}%, Hit@1: {metrics['hit_at_1']:.2f}%, "
+                f"F1: {metrics['macro_f1']:.2f}%, EM: {metrics['exact_match']:.2f}%"
+            )
+
+        del llm
+        elapsed = time.time() - start_time
+        logger.info(f"COMPLETE. Total time: {elapsed / 60:.1f} minutes")
+        return
+
+    # ---- Multi-variant mode (original behavior) ----
     # Build list of (base_dir, variant) to process
     tasks = []
     if args.mode in ("all", "model"):

@@ -11,31 +11,51 @@
 # Script continues on error so the terminal stays open
 
 # =============================================================================
-# CONFIGURATION - Update these paths to match your environment
+# CONFIGURATION - Read from dir_mapping.yml
 # =============================================================================
 
+# Read generalization config from dir_mapping.yml
+YAML_OUT=$(python3 -c "
+import yaml
+with open('dir_mapping.yml') as f:
+    cfg = yaml.safe_load(f)
+g = cfg['generalization']
+d = cfg['defaults']
+print(g['kb_path'])
+print(g['qa_1hop'])
+print(g['qa_2hop'])
+print(g['qa_3hop'])
+print(g['processed_dir'])
+print(g['model_path'])
+print(g['embedding_model'])
+print(cfg['results']['generalization'])
+print(d['top_k'])
+print(d['sample_k'])
+print(d['llm_model'])
+")
+
 # MetaQA raw data paths
-KB_PATH="data/metaqa/kb.txt"
-QA_1HOP="data/metaqa/1-hop/vanilla/qa_test.txt"
-QA_2HOP="data/metaqa/2-hop/vanilla/qa_test.txt"
-QA_3HOP="data/metaqa/3-hop/vanilla/qa_test.txt"
+KB_PATH=$(echo "$YAML_OUT" | sed -n '1p')
+QA_1HOP=$(echo "$YAML_OUT" | sed -n '2p')
+QA_2HOP=$(echo "$YAML_OUT" | sed -n '3p')
+QA_3HOP=$(echo "$YAML_OUT" | sed -n '4p')
 
 # Processed output directory
-PROCESSED_DIR="data/metaqa/processed"
+PROCESSED_DIR=$(echo "$YAML_OUT" | sed -n '5p')
 
 # KGScout model checkpoint (trained on WebQSP or CWQ)
-MODEL_PATH="checkpoints/webqsp-k100/main/"
+MODEL_PATH=$(echo "$YAML_OUT" | sed -n '6p')
 DATASET_NAME="webqsp"  # "webqsp" or "cwq" (which dataset the model was trained on)
 
 # Evaluation output
-OUTPUT_DIR="results/generalization"
-COVERAGE_OUTPUT_DIR="results/generalization/coverage"
+OUTPUT_DIR=$(echo "$YAML_OUT" | sed -n '8p')
+COVERAGE_OUTPUT_DIR="${OUTPUT_DIR}/coverage"
 
 # Parameters
-TOP_K=100
-MAX_TRIPLETS=1000
-LLM_MODEL="llama"  # "llama", "qwen", or "deepseek"
-EMBEDDING_MODEL="all-MiniLM-L6-v2"
+TOP_K=$(echo "$YAML_OUT" | sed -n '9p')
+MAX_TRIPLETS=$(echo "$YAML_OUT" | sed -n '10p')
+LLM_MODEL=$(echo "$YAML_OUT" | sed -n '11p')
+EMBEDDING_MODEL=$(echo "$YAML_OUT" | sed -n '7p')
 
 # =============================================================================
 # STEP 1: Preprocess MetaQA test sets

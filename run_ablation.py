@@ -59,11 +59,15 @@ from ablation.model_ablation import run_model_ablation
 from ablation.reward_ablation import run_reward_ablation
 
 # ============================================================================
-# HARDCODED DATA PATHS - Update these to match your environment
+# DATA PATHS - loaded from dir_mapping.yml
 # ============================================================================
-TRAIN_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
-VAL_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
-TEST_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+from src.utils.dir_config import load_config, get_dataset_paths, get_results_dir
+
+_config = load_config()
+_train, _val, _test = get_dataset_paths("cwq", _config)
+TRAIN_DATA_PATH = _train
+VAL_DATA_PATH = _val
+TEST_DATA_PATH = _test
 
 MODEL_OUTPUT_DIR = "./results/model-ablation"
 REWARD_OUTPUT_DIR = "./results/reward-ablation"

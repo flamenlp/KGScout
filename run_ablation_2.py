@@ -30,12 +30,16 @@ IS_TRAIN_REQUIRED = False
 # ============================================================================
 # HARDCODED PATHS
 # ============================================================================
-TRAIN_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
-VAL_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
-TEST_DATA_PATH = "/mnt/LS226/LS25/sourav23099/cwq/cwq-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+from src.utils.dir_config import load_config, get_dataset_paths, get_results_dir, get_log_path
 
-MODEL_OUTPUT_DIR = "./results/ablation-2/model-ablation"
-REWARD_OUTPUT_DIR = "./results/ablation-2/reward-ablation"
+_config = load_config()
+_train, _val, _test = get_dataset_paths("cwq", _config)
+TRAIN_DATA_PATH = _train
+VAL_DATA_PATH = _val
+TEST_DATA_PATH = _test
+
+MODEL_OUTPUT_DIR = get_results_dir("ablation2", "model_ablation", _config)
+REWARD_OUTPUT_DIR = get_results_dir("ablation2", "reward_ablation", _config)
 LOG_FILE = "ablation2_log.txt"
 
 

@@ -28,19 +28,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ---------- DATA PATHS ----------
-# CWQ
-CWQ_TRAIN="/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
-CWQ_VAL="/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
-CWQ_TEST="/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
+# ---------- DATA PATHS (read from dir_mapping.yml) ----------
+read_yaml_field() {
+    python3 -c "
+import yaml
+with open('dir_mapping.yml') as f:
+    cfg = yaml.safe_load(f)
+ds = cfg['datasets']
+print(ds['cwq']['train'])
+print(ds['cwq']['val'])
+print(ds['cwq']['test'])
+print(ds['webqsp']['train'])
+print(ds['webqsp']['val'])
+print(ds['webqsp']['test'])
+print(cfg['defaults']['llm_model'])
+"
+}
 
-# WebQSP
-WEBQSP_TRAIN="/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
-WEBQSP_VAL="/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
-WEBQSP_TEST="/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
-
-# ---------- OUTPUT ----------
-LLM_MODEL="llama"
+YAML_OUT=$(read_yaml_field)
+CWQ_TRAIN=$(echo "$YAML_OUT" | sed -n '1p')
+CWQ_VAL=$(echo "$YAML_OUT" | sed -n '2p')
+CWQ_TEST=$(echo "$YAML_OUT" | sed -n '3p')
+WEBQSP_TRAIN=$(echo "$YAML_OUT" | sed -n '4p')
+WEBQSP_VAL=$(echo "$YAML_OUT" | sed -n '5p')
+WEBQSP_TEST=$(echo "$YAML_OUT" | sed -n '6p')
+LLM_MODEL=$(echo "$YAML_OUT" | sed -n '7p')
 
 # ---------- BUILD CHECKPOINT ARG ----------
 CHECKPOINT_ARG=""

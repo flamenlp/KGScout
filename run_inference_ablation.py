@@ -44,14 +44,22 @@ from src.utils.metrics import (
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-LLM_MODEL_NAME = "llama"
-MODEL_ABLATION_DIR = "./results/ablation-2/model-ablation"
-REWARD_ABLATION_DIR = "./results/reward-ablation"
-TOP_K = 100
-LOG_FILE = os.path.join("logs", "ablation_inference.log")
+from src.utils.dir_config import (
+    load_config, get_results_dir, get_model_variants,
+    get_reward_variants, get_defaults, get_log_path,
+)
 
-MODEL_VARIANTS = ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
-REWARD_VARIANTS = ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
+_config = load_config()
+_defaults = get_defaults(_config)
+
+LLM_MODEL_NAME = _defaults["llm_model"]
+MODEL_ABLATION_DIR = get_results_dir("ablation2", "model_ablation", _config)
+REWARD_ABLATION_DIR = get_results_dir("ablation2", "reward_ablation", _config)
+TOP_K = _defaults["top_k"]
+LOG_FILE = get_log_path("inference", _config)
+
+MODEL_VARIANTS = get_model_variants(_config)
+REWARD_VARIANTS = get_reward_variants(_config)
 
 # ============================================================================
 # LOGGING
