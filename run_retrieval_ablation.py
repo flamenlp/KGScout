@@ -109,24 +109,15 @@ def setup_logging(log_file):
 # ============================================================================
 
 def _find_last_checkpoint(train_dir: str) -> Optional[str]:
-    """Find the last epoch checkpoint directory (highest epoch number)."""
+    """Find the last best checkpoint directory (counts down from epoch 30)."""
     if not os.path.exists(train_dir):
         return None
-    checkpoints = []
-    for d in os.listdir(train_dir):
-        full_path = os.path.join(train_dir, d)
-        if os.path.isdir(full_path) and "checkpoint" in d:
-            checkpoints.append(full_path)
-    if not checkpoints:
-        return None
-
-    def get_epoch(path):
-        name = os.path.basename(path)
-        match = re.search(r'epoch_(\d+)', name)
-        return int(match.group(1)) if match else 0
-
-    checkpoints.sort(key=get_epoch, reverse=True)
-    return checkpoints[0]
+    # Count down from epoch 30 and return the first best checkpoint that exists
+    for epoch in range(30, 0, -1):
+        candidate = os.path.join(train_dir, f"checkpoint_best_epoch_{epoch}")
+        if os.path.isdir(candidate):
+            return candidate
+    return None
 
 
 # ============================================================================
