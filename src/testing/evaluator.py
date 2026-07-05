@@ -102,7 +102,12 @@ class Evaluator:
                 
                 # Select top-k triplets based on ranking scores
                 k = min(top_k, len(triplets))
-                top_k_indices = torch.topk(ranking_scores.squeeze(), k).indices.cpu().tolist()
+                scores_flat = ranking_scores.squeeze()
+                # Handle edge case where squeeze produces a 0-d tensor (single triplet)
+                if scores_flat.dim() == 0:
+                    top_k_indices = [0]
+                else:
+                    top_k_indices = torch.topk(scores_flat, k).indices.cpu().tolist()
                 selected_triplets = [triplets[i] for i in top_k_indices]
                 
                 # Compute answer coverage
