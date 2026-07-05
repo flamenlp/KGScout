@@ -195,8 +195,6 @@ k-ablation-cosine dataset:
 
 full-pipeline dataset topk="" samplek="":
     #!/usr/bin/env bash
-    set -e
-
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
