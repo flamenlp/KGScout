@@ -14,7 +14,6 @@ from typing import Dict, Any
 from src.model.path_ranker import PathRankingModel
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 from src.testing.evaluator import Evaluator
-from src.training.trainer import Trainer
 
 
 class EvaluateService:
@@ -163,12 +162,11 @@ class EvaluateService:
         # Load test data
         test_loader = self.load_test_data(test_data_path)
         
-        # Create trainer (needed by evaluator)
-        trainer = Trainer(
-            path_ranker=path_ranker,
-            checkpoint_dir="",
-            device=self.device
-        )
+        # Create a lightweight wrapper — Evaluator only needs trainer.path_ranker
+        class _ModelHolder:
+            pass
+        trainer = _ModelHolder()
+        trainer.path_ranker = path_ranker
         
         # Create evaluator
         print("\nInitializing evaluator...")
