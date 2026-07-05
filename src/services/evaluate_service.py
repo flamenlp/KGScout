@@ -50,8 +50,12 @@ class EvaluateService:
         """
         Load trained model from checkpoint.
         
+        Supports both formats:
+        - model_state_dict format (from old Trainer)
+        - save_pretrained format (component-level state dicts from JointTrainer)
+        
         Args:
-            checkpoint_path: Path to model checkpoint
+            checkpoint_path: Path to model checkpoint (.pt file)
         
         Returns:
             Loaded PathRankingModel
@@ -65,7 +69,7 @@ class EvaluateService:
             )
         
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
         except Exception as e:
             raise FileNotFoundError(
                 f"Failed to load checkpoint from {checkpoint_path}.\n"
@@ -73,26 +77,22 @@ class EvaluateService:
                 f"Error: {str(e)}"
             )
         
-        if "model_state_dict" not in checkpoint:
-            raise ValueError(
-                f"Checkpoint is missing 'model_state_dict' key.\n"
-                f"The checkpoint may have been saved incorrectly or is corrupted.\n"
-                f"Available keys: {list(checkpoint.keys())}"
-            )
-        
-        # Create model and load weights
+        # Create model
         path_ranker = PathRankingModel(hidden_size=384, device=self.device)
         
-        try:
+        if "model_state_dict" in checkpoint:
+            # Standard format with full state_dict
             path_ranker.load_state_dict(checkpoint["model_state_dict"])
-        except RuntimeError as e:
-            raise ValueError(
-                f"Model architecture mismatch when loading checkpoint.\n"
-                f"The checkpoint may have been saved with a different model architecture or hidden_size.\n"
-                f"Error details: {str(e)}"
-            )
+        else:
+            # save_pretrained format (component-level state dicts)
+            for key, val in checkpoint.items():
+                if key in ('temperature', 'baseline'):
+                    getattr(path_ranker, key).data = val.to(self.device)
+                elif hasattr(path_ranker, key):
+                    getattr(path_ranker, key).load_state_dict(val)
         
         path_ranker.to(self.device)
+        path_ranker.eval()
         print("Model loaded successfully!")
         
         return path_ranker
@@ -102,20 +102,27 @@ class EvaluateService:
         Load and preprocess test data.
         
         Args:
-            test_data_path: Path to test data file
+            test_data_path: Path to test data file (.pt)
         
         Returns:
             DataLoader for test data
         """
         print(f"\nLoading test data from {test_data_path}...")
-        with open(test_data_path, 'rb') as f:
-            test_data = pickle.load(f)
+
+        import __main__
+        __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
+
+        test_data = torch.load(test_data_path, weights_only=False, map_location="cpu")
         
         print(f"Loaded {len(test_data)} test samples")
         
-        # Create test dataset with PPR features
-        print("\nCreating test dataset with PPR features...")
-        test_dataset = JointTrainingDatasetv3PPR(test_data, device=self.device)
+        # If already a Dataset, use directly; otherwise wrap
+        from torch.utils.data import Dataset
+        if isinstance(test_data, Dataset):
+            test_dataset = test_data
+        else:
+            print("\nCreating test dataset with PPR features...")
+            test_dataset = JointTrainingDatasetv3PPR(test_data, device=self.device)
         
         # Create dataloader
         collate_fn = self._create_collate_fn()

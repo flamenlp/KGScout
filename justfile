@@ -235,9 +235,14 @@ full-pipeline dataset topk="" samplek="":
 
     # ---- STEP 1: Train model ----
     MODEL_DIR="$BASE/model"
-    CKPT="$MODEL_DIR/main_training_k${TOPK}/best_model_k${TOPK}.pt"
+    TRAIN_DIR="$MODEL_DIR/main_training_k${TOPK}"
+    # Find best checkpoint (saved as checkpoint_best_epoch_*/path_ranker.pt)
+    CKPT=""
+    if [ -d "$TRAIN_DIR" ]; then
+        CKPT=$(find "$TRAIN_DIR" -path "*/checkpoint_best_epoch_*/path_ranker.pt" | sort -t_ -k4 -n -r | head -1)
+    fi
 
-    if [ -f "$CKPT" ]; then
+    if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
         echo "" | tee -a "$LOG"
         echo ">>> STEP 1: Model exists at $CKPT. Skipping." | tee -a "$LOG"
     else
@@ -252,7 +257,16 @@ full-pipeline dataset topk="" samplek="":
             --num-epochs 30 \
             --early-stopping-patience 10 \
             2>&1 | tee -a "$LOG"
+        # Find the best checkpoint after training
+        CKPT=$(find "$TRAIN_DIR" -path "*/checkpoint_best_epoch_*/path_ranker.pt" | sort -t_ -k4 -n -r | head -1)
     fi
+
+    if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+        echo ">>> ERROR: No best checkpoint found after training." | tee -a "$LOG"
+        exit 1
+    fi
+    # CKPT_DIR is the directory containing path_ranker.pt (needed for from_pretrained)
+    CKPT_DIR=$(dirname "$CKPT")
 
     # ---- STEP 2: Triplet selection (generates selected_triplets.json) ----
     TRIPLET_DIR="$BASE/triplet-analysis"

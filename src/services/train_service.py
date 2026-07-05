@@ -17,7 +17,6 @@ from src.preprocess.pretrain_dataset import CosinePretrainingDataset
 from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.training.pretrainer import Pretrainer
 from src.training.trainer import Trainer
-from src.training.monitor import TrainingMonitor
 
 
 class TrainService:
@@ -294,34 +293,28 @@ class TrainService:
         main_train_dataset = SampledJointTrainingDataset(train_base_dataset, k=sample_k)
         main_val_dataset = SampledJointTrainingDataset(val_base_dataset, k=sample_k)
         
-        # Create dataloaders
-        collate_fn = self._create_collate_fn()
+        # Create dataloaders (batch_size=1, default collate — same as model_ablation.py)
         main_train_loader = DataLoader(
             main_train_dataset,
             batch_size=1,
             shuffle=True,
-            collate_fn=collate_fn
         )
         main_val_loader = DataLoader(
             main_val_dataset,
             batch_size=1,
             shuffle=False,
-            collate_fn=collate_fn
         )
         
         # Create checkpoint directory
         main_checkpoint_dir = os.path.join(checkpoint_dir, f"main_training_k{k}")
         os.makedirs(main_checkpoint_dir, exist_ok=True)
         
-        # Create training monitor
-        monitor_log_dir = os.path.join(main_checkpoint_dir, "training_logs")
-        monitor = TrainingMonitor(log_dir=monitor_log_dir)
-        
-        # Initialize trainer
+        # Initialize trainer (matches JointTrainer from ablation-2/model_ablation.py)
         trainer = Trainer(
             path_ranker=path_ranker,
             checkpoint_dir=main_checkpoint_dir,
-            device=self.device
+            device=self.device,
+            gradient_accumulation_steps=gradient_accumulation_steps,
         )
         
         # Run training
@@ -329,22 +322,19 @@ class TrainService:
         trainer.train(
             train_dataloader=main_train_loader,
             val_dataloader=main_val_loader,
-            monitor=monitor,
             num_epochs=num_epochs,
             learning_rate=learning_rate,
             warmup_steps=warmup_steps,
-            weight_decay=weight_decay,
-            gradient_accumulation_steps=gradient_accumulation_steps,
             validation_interval=validation_interval,
             early_stopping_patience=early_stopping_patience,
-            k=k
+            k=k,
         )
         
         print("\nMain training phase complete!")
         
         return {
             'checkpoint_dir': main_checkpoint_dir,
-            'log_dir': monitor_log_dir
+            'log_dir': main_checkpoint_dir
         }
     
     def train(
