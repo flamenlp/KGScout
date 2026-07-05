@@ -60,30 +60,45 @@ class TrainService:
         Returns:
             Tuple of (train_data, val_data)
         """
+        import __main__
+        from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+        __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
+
         print("\nLoading training data...")
-        with open(train_path, 'rb') as f:
-            train_data = pickle.load(f)
+        train_data = torch.load(train_path, weights_only=False, map_location="cpu")
         
         print("Loading validation data...")
-        with open(val_path, 'rb') as f:
-            val_data = pickle.load(f)
+        val_data = torch.load(val_path, weights_only=False, map_location="cpu")
         
         return train_data, val_data
     
     def create_base_datasets(self, train_data, val_data):
         """
-        Create base datasets with PPR features.
+        Create base datasets with PPR features, or return as-is if already datasets.
         
         Args:
-            train_data: Training data
-            val_data: Validation data
+            train_data: Training data (raw list of dicts or JointTrainingDatasetv3PPR)
+            val_data: Validation data (raw list of dicts or JointTrainingDatasetv3PPR)
         
         Returns:
             Tuple of (train_base_dataset, val_base_dataset)
         """
-        print("\nCreating base datasets with PPR features...")
-        train_base_dataset = JointTrainingDatasetv3PPR(train_data, device=self.device)
-        val_base_dataset = JointTrainingDatasetv3PPR(val_data, device=self.device)
+        from torch.utils.data import Dataset
+        
+        # If data is already a Dataset (loaded from .pt), use directly
+        if isinstance(train_data, Dataset):
+            print(f"\nTraining data is already a Dataset ({type(train_data).__name__}, {len(train_data)} samples)")
+            train_base_dataset = train_data
+        else:
+            print("\nCreating base datasets with PPR features...")
+            train_base_dataset = JointTrainingDatasetv3PPR(train_data, device=self.device)
+        
+        if isinstance(val_data, Dataset):
+            print(f"Validation data is already a Dataset ({type(val_data).__name__}, {len(val_data)} samples)")
+            val_base_dataset = val_data
+        else:
+            val_base_dataset = JointTrainingDatasetv3PPR(val_data, device=self.device)
+        
         return train_base_dataset, val_base_dataset
     
     def run_pretraining(
