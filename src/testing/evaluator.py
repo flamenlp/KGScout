@@ -100,15 +100,14 @@ class Evaluator:
                     graph_scores
                 )
                 
+                # Skip samples where graph_features is 1-D (single triplet edge case)
+                if graph_scores.dim() == 1:
+                    continue
+                
                 # Select top-k triplets based on ranking scores
                 k = min(top_k, len(triplets))
-                scores_flat = ranking_scores.squeeze()
-                # Handle edge case where squeeze produces a 0-d tensor (single triplet)
-                if scores_flat.dim() == 0:
-                    top_k_indices = [0]
-                else:
-                    top_k_indices = torch.topk(scores_flat, k).indices.cpu().tolist()
-                selected_triplets = [triplets[i] for i in top_k_indices]
+                top_k_scores, top_k_indices = torch.topk(ranking_scores, k)
+                selected_triplets = [triplets[i] for i in top_k_indices.tolist()]
                 
                 # Compute answer coverage
                 answer_coverage = self._compute_answer_coverage(
