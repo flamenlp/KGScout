@@ -56,6 +56,7 @@ defaults:
   num_epochs: 30
   early_stopping_patience: 10
   llm_model: "llama"
+  pick_last_checkpoint: false  # if true, pick checkpoint_epoch_N (last); if false, pick checkpoint_best_epoch_N
 
 # LLM model identifiers
 llm_models:

@@ -10,6 +10,7 @@
 
 k-ablation dataset:
     #!/usr/bin/env bash
+
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -45,8 +46,15 @@ k-ablation dataset:
 
         # ---- STEP 1: Train model ----
         MODEL_DIR="$BASE/k${K}/model"
-        CKPT="$MODEL_DIR/main_training_k${K}/best_model_k${K}.pt"
-        if [ -f "$CKPT" ]; then
+        TRAIN_DIR="$MODEL_DIR/main_training_k${K}"
+
+        # Find best checkpoint using the helper script
+        CKPT=""
+        if [ -d "$TRAIN_DIR" ]; then
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
+        fi
+
+        if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
             echo "  [k=$K] STEP 1: Model exists at $CKPT. Skipping." | tee -a "$LOG"
         else
             echo "  [k=$K] STEP 1: Training..." | tee -a "$LOG"
@@ -58,6 +66,8 @@ k-ablation dataset:
                 --num-epochs 30 \
                 --early-stopping-patience 10 \
                 2>&1 | tee -a "$LOG"
+            # Re-find checkpoint after training
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
         fi
 
         # ---- STEP 2: Triplet selection ----
@@ -66,8 +76,8 @@ k-ablation dataset:
 
         if [ -f "$TRIPLET_FILE" ]; then
             echo "  [k=$K] STEP 2: selected_triplets.json exists. Skipping." | tee -a "$LOG"
-        elif [ ! -f "$CKPT" ]; then
-            echo "  [k=$K] STEP 2: ERROR: Model not found at $CKPT. Skipping." | tee -a "$LOG"
+        elif [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+            echo "  [k=$K] STEP 2: ERROR: Model checkpoint not found. Skipping." | tee -a "$LOG"
         else
             echo "  [k=$K] STEP 2: Generating triplets (top-k=$K)..." | tee -a "$LOG"
             python -m src.utils.triplet_selector \
@@ -110,6 +120,7 @@ k-ablation dataset:
 
 k-ablation-cosine dataset:
     #!/usr/bin/env bash
+
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -195,6 +206,7 @@ k-ablation-cosine dataset:
 
 full-pipeline dataset topk="" samplek="":
     #!/usr/bin/env bash
+
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -236,10 +248,11 @@ full-pipeline dataset topk="" samplek="":
     # ---- STEP 1: Train model ----
     MODEL_DIR="$BASE/model"
     TRAIN_DIR="$MODEL_DIR/main_training_k${TOPK}"
-    # Find best checkpoint (saved as checkpoint_best_epoch_*/path_ranker.pt)
+
+    # Find best checkpoint using the helper script
     CKPT=""
     if [ -d "$TRAIN_DIR" ]; then
-        CKPT=$(find "$TRAIN_DIR" -path "*/checkpoint_best_epoch_*/path_ranker.pt" | sort -t_ -k4 -n -r | head -1)
+        CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
     fi
 
     if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
@@ -253,12 +266,11 @@ full-pipeline dataset topk="" samplek="":
             --val-data "$VAL" \
             --checkpoint-dir "$MODEL_DIR" \
             --k $TOPK \
-            --sample-k $SAMPLEK \
             --num-epochs 30 \
             --early-stopping-patience 10 \
             2>&1 | tee -a "$LOG"
-        # Find the best checkpoint after training
-        CKPT=$(find "$TRAIN_DIR" -path "*/checkpoint_best_epoch_*/path_ranker.pt" | sort -t_ -k4 -n -r | head -1)
+        # Re-find checkpoint after training
+        CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
     fi
 
     if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
