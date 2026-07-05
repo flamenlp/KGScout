@@ -217,7 +217,8 @@ def run_train_command(args):
         weight_decay=args.weight_decay,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         validation_interval=args.validation_interval,
-        early_stopping_patience=args.early_stopping_patience
+        early_stopping_patience=args.early_stopping_patience,
+        sample_k=args.sample_k
     )
     
     # Print summary
@@ -725,8 +726,7 @@ Examples:
         '--k',
         type=int,
         required=True,
-        choices=[30, 50, 100, 150],
-        help='K value for main training phase (number of triplets to sample per question)'
+        help='K value for main training phase (number of top triplets to select per question)'
     )
     train_parser.add_argument(
         '--num-epochs',
@@ -769,6 +769,12 @@ Examples:
         type=int,
         default=100,
         help='Number of warmup steps for learning rate scheduler (default: 100)'
+    )
+    train_parser.add_argument(
+        '--sample-k',
+        type=int,
+        default=1000,
+        help='Pool size N: number of prefiltered triplets per question (default: 1000)'
     )
     
     # ========================================================================

@@ -28,6 +28,9 @@ results:
   # K-value ablation study
   k_ablation: "./results/k-ablation"
 
+  # Full pipeline (train → coverage → triplets → LLM inference)
+  full_pipeline: "./results/full-pipeline"
+
   # Cosine baseline K-ablation (no trained model, uses cosine-sorted triplets)
   cosine_k_ablation: "./results/cosine-k-ablation"
 

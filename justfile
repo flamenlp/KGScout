@@ -10,8 +10,6 @@
 
 k-ablation dataset:
     #!/usr/bin/env bash
-    set -e
-
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -112,8 +110,6 @@ k-ablation dataset:
 
 k-ablation-cosine dataset:
     #!/usr/bin/env bash
-    set -e
-
     # --- Read paths from config.yml ---
     YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
 
@@ -186,4 +182,150 @@ k-ablation-cosine dataset:
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
     echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/"               | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# FULL-PIPELINE: Train → Coverage → Triplet Selection → vLLM Inference
+# ============================================================================
+# Usage: just full-pipeline cwq
+#        just full-pipeline webqsp
+#        just full-pipeline cwq 50       (override top-k, default from config.yml)
+#        just full-pipeline cwq 50 500   (override top-k and sample-k)
+
+full-pipeline dataset topk="" samplek="":
+    #!/usr/bin/env bash
+    set -e
+
+    # --- Read paths from config.yml ---
+    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"
+        exit 1
+    fi
+
+    TRAIN=$(echo "$YAML_OUTPUT" | sed -n '1p')
+    VAL=$(echo "$YAML_OUTPUT" | sed -n '2p')
+    TEST=$(echo "$YAML_OUTPUT" | sed -n '3p')
+    DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '6p')
+    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
+
+    # Use overrides if provided, otherwise use defaults from config
+    TOPK="{{topk}}"
+    if [ -z "$TOPK" ]; then
+        TOPK="$DEFAULT_TOPK"
+    fi
+
+    SAMPLEK="{{samplek}}"
+    if [ -z "$SAMPLEK" ]; then
+        SAMPLEK="1000"
+    fi
+
+    BASE="./results/full-pipeline/{{dataset}}/k${TOPK}-N${SAMPLEK}"
+    LOG="logs/full-pipeline.log"
+    mkdir -p logs
+
+    echo "============================================================" | tee -a "$LOG"
+    echo "FULL PIPELINE: {{dataset}} | top-k=$TOPK | sample-k=$SAMPLEK" | tee -a "$LOG"
+    echo "  Train: $TRAIN"                                              | tee -a "$LOG"
+    echo "  Val:   $VAL"                                                | tee -a "$LOG"
+    echo "  Test:  $TEST"                                               | tee -a "$LOG"
+    echo "  LLM:   $LLM_MODEL"                                         | tee -a "$LOG"
+    echo "  Output: $BASE/"                                             | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+    # ---- STEP 1: Train model ----
+    MODEL_DIR="$BASE/model"
+    CKPT="$MODEL_DIR/main_training_k${TOPK}/best_model_k${TOPK}.pt"
+
+    if [ -f "$CKPT" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 1: Model exists at $CKPT. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 1: Training (k=$TOPK, N=$SAMPLEK, epochs=30, patience=10)..." | tee -a "$LOG"
+        python cli.py train \
+            --train-data "$TRAIN" \
+            --val-data "$VAL" \
+            --checkpoint-dir "$MODEL_DIR" \
+            --k $TOPK \
+            --sample-k $SAMPLEK \
+            --num-epochs 30 \
+            --early-stopping-patience 10 \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- STEP 2: Triplet selection (generates selected_triplets.json) ----
+    TRIPLET_DIR="$BASE/triplet-analysis"
+    TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
+
+    if [ -f "$TRIPLET_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: selected_triplets.json exists. Skipping." | tee -a "$LOG"
+    elif [ ! -f "$CKPT" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: ERROR - Model checkpoint not found. Cannot generate triplets." | tee -a "$LOG"
+        exit 1
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: Generating triplets (top-k=$TOPK, sample-k=$SAMPLEK)..." | tee -a "$LOG"
+        python -m src.utils.triplet_selector \
+            --model-path "$CKPT" \
+            --test-data "$TEST" \
+            --output-dir "$TRIPLET_DIR" \
+            --top-k $TOPK \
+            --sample-k $SAMPLEK \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- STEP 3: Coverage analysis (ans_present + path_coverage) ----
+    COVERAGE_DIR="$BASE/coverage"
+    COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
+
+    if [ -f "$COVERAGE_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Coverage metrics exist. Skipping." | tee -a "$LOG"
+    elif [ ! -f "$CKPT" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: ERROR - Model checkpoint not found. Cannot compute coverage." | tee -a "$LOG"
+        exit 1
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Computing coverage (ans_present, path_coverage)..." | tee -a "$LOG"
+        python scripts/run_coverage.py "$CKPT" "$TEST" $TOPK "$COVERAGE_FILE" \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- STEP 4: vLLM LLM Inference (hit, hit@1, f1, precision, recall) ----
+    LLM_DIR="$BASE/llm-inference"
+    LLM_METRICS="$LLM_DIR/llm_metrics.json"
+
+    if [ -f "$LLM_METRICS" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: LLM metrics exist. Skipping." | tee -a "$LOG"
+    elif [ ! -f "$TRIPLET_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: ERROR - selected_triplets.json not found. Cannot run LLM." | tee -a "$LOG"
+        exit 1
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: Running vLLM inference (top-k=$TOPK)..." | tee -a "$LOG"
+        python run_vllm_inference_ablation.py \
+            --input "$TRIPLET_FILE" \
+            --output "$LLM_DIR" \
+            --llm-model "$LLM_MODEL" \
+            --top-k $TOPK \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- Summary ----
+    echo "" | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+    echo "FULL PIPELINE COMPLETE: {{dataset}} | k=$TOPK | N=$SAMPLEK"   | tee -a "$LOG"
+    echo "  Results: $BASE/"                                            | tee -a "$LOG"
+    echo "    model/             - trained checkpoint"                   | tee -a "$LOG"
+    echo "    triplet-analysis/  - selected_triplets.json"              | tee -a "$LOG"
+    echo "    coverage/          - coverage_metrics.json"               | tee -a "$LOG"
+    echo "    llm-inference/     - llm_metrics.json"                    | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
