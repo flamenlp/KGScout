@@ -89,7 +89,7 @@ k-ablation dataset:
         fi
 
         # ---- STEP 3: Coverage analysis (from selected_triplets.json) ----
-        COVERAGE_DIR="$BASE/k${K}/coverage"
+        COVERAGE_DIR="$BASE/k${K}/triplet_metrics"
         COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
 
         if [ -f "$COVERAGE_FILE" ]; then
@@ -187,7 +187,7 @@ k-ablation-cosine dataset:
 
     for K in $K_VALUES; do
         TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
-        COVERAGE_DIR="$BASE/k${K}/coverage"
+        COVERAGE_DIR="$BASE/k${K}/triplet_metrics"
         COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
 
         if [ -f "$COVERAGE_FILE" ]; then
@@ -340,7 +340,7 @@ full-pipeline dataset topk="" samplek="":
     fi
 
     # ---- STEP 3: Coverage analysis (from selected_triplets.json) ----
-    COVERAGE_DIR="$BASE/coverage"
+    COVERAGE_DIR="$BASE/triplet_metrics"
     COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
 
     if [ -f "$COVERAGE_FILE" ]; then
@@ -387,6 +387,6 @@ full-pipeline dataset topk="" samplek="":
     echo "  Results: $BASE/"                                            | tee -a "$LOG"
     echo "    model/             - trained checkpoint"                   | tee -a "$LOG"
     echo "    triplet-analysis/  - selected_triplets.json"              | tee -a "$LOG"
-    echo "    coverage/          - coverage_metrics.json"               | tee -a "$LOG"
+    echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
     echo "    llm-inference/     - llm_metrics.json"                    | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
