@@ -88,16 +88,31 @@ k-ablation dataset:
                 2>&1 | tee -a "$LOG"
         fi
 
-        # ---- STEP 3: vLLM LLM Inference ----
+        # ---- STEP 3: Coverage analysis (from selected_triplets.json) ----
+        COVERAGE_DIR="$BASE/k${K}/coverage"
+        COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
+
+        if [ -f "$COVERAGE_FILE" ]; then
+            echo "  [k=$K] STEP 3: Coverage metrics exist. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [k=$K] STEP 3: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [k=$K] STEP 3: Computing coverage (ans_present, path_coverage)..." | tee -a "$LOG"
+            python scripts/run_coverage_from_triplets.py \
+                "$TRIPLET_FILE" "$COVERAGE_FILE" \
+                2>&1 | tee -a "$LOG"
+        fi
+
+        # ---- STEP 4: vLLM LLM Inference ----
         RESULT_DIR="$BASE/k${K}/model-result"
         METRICS_FILE="$RESULT_DIR/llm_metrics.json"
 
         if [ -f "$METRICS_FILE" ]; then
-            echo "  [k=$K] STEP 3: LLM results exist. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 4: LLM results exist. Skipping." | tee -a "$LOG"
         elif [ ! -f "$TRIPLET_FILE" ]; then
-            echo "  [k=$K] STEP 3: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] STEP 4: ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] STEP 3: Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            echo "  [k=$K] STEP 4: Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
             python run_vllm_inference_ablation.py \
                 --input "$TRIPLET_FILE" \
                 --output "$RESULT_DIR" \
@@ -166,9 +181,30 @@ k-ablation-cosine dataset:
         fi
     done
 
-    # ---- PHASE 2: vLLM LLM Inference (all k-values) ----
+    # ---- PHASE 2: Coverage analysis (all k-values) ----
     echo "" | tee -a "$LOG"
-    echo ">>> PHASE 2: vLLM inference (all k-values)" | tee -a "$LOG"
+    echo ">>> PHASE 2: Coverage analysis (all k-values)" | tee -a "$LOG"
+
+    for K in $K_VALUES; do
+        TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
+        COVERAGE_DIR="$BASE/k${K}/coverage"
+        COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
+
+        if [ -f "$COVERAGE_FILE" ]; then
+            echo "  [k=$K] Coverage metrics exist. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [k=$K] ERROR: selected_triplets.json not found. Skipping coverage." | tee -a "$LOG"
+        else
+            echo "  [k=$K] Computing coverage (ans_present, path_coverage)..." | tee -a "$LOG"
+            python scripts/run_coverage_from_triplets.py \
+                "$TRIPLET_FILE" "$COVERAGE_FILE" \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # ---- PHASE 3: vLLM LLM Inference (all k-values) ----
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 3: vLLM inference (all k-values)" | tee -a "$LOG"
 
     for K in $K_VALUES; do
         TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
@@ -303,21 +339,22 @@ full-pipeline dataset topk="" samplek="":
             2>&1 | tee -a "$LOG"
     fi
 
-    # ---- STEP 3: Coverage analysis (ans_present + path_coverage) ----
+    # ---- STEP 3: Coverage analysis (from selected_triplets.json) ----
     COVERAGE_DIR="$BASE/coverage"
     COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
 
     if [ -f "$COVERAGE_FILE" ]; then
         echo "" | tee -a "$LOG"
         echo ">>> STEP 3: Coverage metrics exist. Skipping." | tee -a "$LOG"
-    elif [ ! -f "$CKPT" ]; then
+    elif [ ! -f "$TRIPLET_FILE" ]; then
         echo "" | tee -a "$LOG"
-        echo ">>> STEP 3: ERROR - Model checkpoint not found. Cannot compute coverage." | tee -a "$LOG"
+        echo ">>> STEP 3: ERROR - selected_triplets.json not found. Cannot compute coverage." | tee -a "$LOG"
         exit 1
     else
         echo "" | tee -a "$LOG"
         echo ">>> STEP 3: Computing coverage (ans_present, path_coverage)..." | tee -a "$LOG"
-        python scripts/run_coverage.py "$CKPT" "$TEST" $TOPK "$COVERAGE_FILE" \
+        python scripts/run_coverage_from_triplets.py \
+            "$TRIPLET_FILE" "$COVERAGE_FILE" \
             2>&1 | tee -a "$LOG"
     fi
 
