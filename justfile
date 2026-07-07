@@ -390,3 +390,244 @@ full-pipeline dataset topk="" samplek="":
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
     echo "    llm-inference/     - llm_metrics.json"                    | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# ABLATION-2: Model Architecture + Reward Function Ablation Studies
+# ============================================================================
+# Reversed attention ablations: 6 model variants + 6 reward variants.
+# Pipeline per variant: Train → Triplet Selection → Coverage → vLLM Inference
+#
+# Usage: just ablation-2 cwq
+#        just ablation-2 webqsp
+
+run-ablations dataset:
+    #!/usr/bin/env bash
+
+    # --- Read paths from config.yml ---
+    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"
+        exit 1
+    fi
+
+    TRAIN=$(echo "$YAML_OUTPUT" | sed -n '1p')
+    VAL=$(echo "$YAML_OUTPUT" | sed -n '2p')
+    TEST=$(echo "$YAML_OUTPUT" | sed -n '3p')
+    DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '6p')
+    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
+
+    # Variant lists (from config.yml experiments section)
+    MODEL_VARIANTS="no-ppr no-rt no-tt no-gate no-ra no-ta"
+    REWARD_VARIANTS="no_pres no_conn no_path only_pres only_conn only_cov"
+
+    # Base output directories
+    MODEL_BASE="./results/ablation-2/{{dataset}}-model-ablation"
+    REWARD_BASE="./results/ablation-2/{{dataset}}-reward-ablation"
+
+    LOG="logs/ablation-2.log"
+    mkdir -p logs
+
+    echo "============================================================" | tee -a "$LOG"
+    echo "ABLATION-2: {{dataset}}"                                      | tee -a "$LOG"
+    echo "  Model variants:  $MODEL_VARIANTS"                           | tee -a "$LOG"
+    echo "  Reward variants: $REWARD_VARIANTS"                          | tee -a "$LOG"
+    echo "  Train: $TRAIN"                                              | tee -a "$LOG"
+    echo "  Val:   $VAL"                                                | tee -a "$LOG"
+    echo "  Test:  $TEST"                                               | tee -a "$LOG"
+    echo "  LLM:   $LLM_MODEL"                                         | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+    # ================================================================
+    # PHASE 1: Model Ablation — Train + Triplet Generation
+    # ================================================================
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 1: Model Ablation — Train + Triplet Generation" | tee -a "$LOG"
+
+    for V in $MODEL_VARIANTS; do
+        TRAIN_DIR="$MODEL_BASE/$V/model/trained"
+        TRIPLET_FILE="$MODEL_BASE/$V/triplet-result/selected_triplets.json"
+
+        echo "" | tee -a "$LOG"
+        echo "  [$V] -------------------------------------------" | tee -a "$LOG"
+
+        if [ -f "$TRIPLET_FILE" ]; then
+            echo "  [$V] selected_triplets.json exists. Skipping train+inference." | tee -a "$LOG"
+            continue
+        fi
+
+        # Check if checkpoint exists (skip training if so)
+        CKPT=""
+        if [ -d "$TRAIN_DIR" ]; then
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
+        fi
+
+        if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
+            echo "  [$V] Checkpoint found. Skipping training, running inference only..." | tee -a "$LOG"
+            python -m ablation-2.model_ablation \
+                --train_data "$TRAIN" \
+                --val_data "$VAL" \
+                --test_data "$TEST" \
+                --output_dir "$MODEL_BASE" \
+                --experiments $V \
+                --skip_train \
+                2>&1 | tee -a "$LOG"
+        else
+            echo "  [$V] Training + inference..." | tee -a "$LOG"
+            python -m ablation-2.model_ablation \
+                --train_data "$TRAIN" \
+                --val_data "$VAL" \
+                --test_data "$TEST" \
+                --output_dir "$MODEL_BASE" \
+                --experiments $V \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # ================================================================
+    # PHASE 2: Reward Ablation — Train + Triplet Generation
+    # ================================================================
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 2: Reward Ablation — Train + Triplet Generation" | tee -a "$LOG"
+
+    for V in $REWARD_VARIANTS; do
+        TRAIN_DIR="$REWARD_BASE/$V/model/trained"
+        TRIPLET_FILE="$REWARD_BASE/$V/triplet-result/selected_triplets.json"
+
+        echo "" | tee -a "$LOG"
+        echo "  [$V] -------------------------------------------" | tee -a "$LOG"
+
+        if [ -f "$TRIPLET_FILE" ]; then
+            echo "  [$V] selected_triplets.json exists. Skipping train+inference." | tee -a "$LOG"
+            continue
+        fi
+
+        # Check if checkpoint exists (skip training if so)
+        CKPT=""
+        if [ -d "$TRAIN_DIR" ]; then
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
+        fi
+
+        if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
+            echo "  [$V] Checkpoint found. Skipping training, running inference only..." | tee -a "$LOG"
+            python -m ablation-2.reward_ablation \
+                --train_data "$TRAIN" \
+                --val_data "$VAL" \
+                --test_data "$TEST" \
+                --output_dir "$REWARD_BASE" \
+                --experiments $V \
+                --skip_train \
+                2>&1 | tee -a "$LOG"
+        else
+            echo "  [$V] Training + inference..." | tee -a "$LOG"
+            python -m ablation-2.reward_ablation \
+                --train_data "$TRAIN" \
+                --val_data "$VAL" \
+                --test_data "$TEST" \
+                --output_dir "$REWARD_BASE" \
+                --experiments $V \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # ================================================================
+    # PHASE 3: Coverage Analysis (all variants)
+    # ================================================================
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 3: Coverage Analysis" | tee -a "$LOG"
+
+    # Model ablation coverage
+    for V in $MODEL_VARIANTS; do
+        TRIPLET_FILE="$MODEL_BASE/$V/triplet-result/selected_triplets.json"
+        COVERAGE_FILE="$MODEL_BASE/$V/triplet_metrics/coverage_metrics.json"
+
+        if [ -f "$COVERAGE_FILE" ]; then
+            echo "  [model/$V] Coverage exists. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [model/$V] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [model/$V] Computing coverage..." | tee -a "$LOG"
+            python scripts/run_coverage_from_triplets.py \
+                "$TRIPLET_FILE" "$COVERAGE_FILE" \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # Reward ablation coverage
+    for V in $REWARD_VARIANTS; do
+        TRIPLET_FILE="$REWARD_BASE/$V/triplet-result/selected_triplets.json"
+        COVERAGE_FILE="$REWARD_BASE/$V/triplet_metrics/coverage_metrics.json"
+
+        if [ -f "$COVERAGE_FILE" ]; then
+            echo "  [reward/$V] Coverage exists. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [reward/$V] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [reward/$V] Computing coverage..." | tee -a "$LOG"
+            python scripts/run_coverage_from_triplets.py \
+                "$TRIPLET_FILE" "$COVERAGE_FILE" \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # ================================================================
+    # PHASE 4: vLLM Inference (all variants, per-variant skip)
+    # ================================================================
+    echo "" | tee -a "$LOG"
+    echo ">>> PHASE 4: vLLM Inference" | tee -a "$LOG"
+
+    # Model ablation inference
+    for V in $MODEL_VARIANTS; do
+        TRIPLET_FILE="$MODEL_BASE/$V/triplet-result/selected_triplets.json"
+        LLM_DIR="$MODEL_BASE/$V/llama-inference"
+        LLM_METRICS="$LLM_DIR/llm_metrics.json"
+
+        if [ -f "$LLM_METRICS" ]; then
+            echo "  [model/$V] LLM metrics exist. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [model/$V] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [model/$V] Running vLLM inference..." | tee -a "$LOG"
+            python run_vllm_inference_ablation.py \
+                --input "$TRIPLET_FILE" \
+                --output "$LLM_DIR" \
+                --llm-model "$LLM_MODEL" \
+                --top-k $DEFAULT_TOPK \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # Reward ablation inference
+    for V in $REWARD_VARIANTS; do
+        TRIPLET_FILE="$REWARD_BASE/$V/triplet-result/selected_triplets.json"
+        LLM_DIR="$REWARD_BASE/$V/llama-inference"
+        LLM_METRICS="$LLM_DIR/llm_metrics.json"
+
+        if [ -f "$LLM_METRICS" ]; then
+            echo "  [reward/$V] LLM metrics exist. Skipping." | tee -a "$LOG"
+        elif [ ! -f "$TRIPLET_FILE" ]; then
+            echo "  [reward/$V] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
+        else
+            echo "  [reward/$V] Running vLLM inference..." | tee -a "$LOG"
+            python run_vllm_inference_ablation.py \
+                --input "$TRIPLET_FILE" \
+                --output "$LLM_DIR" \
+                --llm-model "$LLM_MODEL" \
+                --top-k $DEFAULT_TOPK \
+                2>&1 | tee -a "$LOG"
+        fi
+    done
+
+    # ---- Summary ----
+    echo "" | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+    echo "ABLATION-2 COMPLETE: {{dataset}}"                             | tee -a "$LOG"
+    echo "  Model ablation: $MODEL_BASE/"                               | tee -a "$LOG"
+    echo "  Reward ablation: $REWARD_BASE/"                             | tee -a "$LOG"
+    echo "  Per variant:"                                               | tee -a "$LOG"
+    echo "    model/trained/     - checkpoints"                         | tee -a "$LOG"
+    echo "    triplet-result/    - selected_triplets.json"              | tee -a "$LOG"
+    echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
+    echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
