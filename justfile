@@ -430,7 +430,7 @@ run-ablations dataset:
     mkdir -p logs
 
     echo "============================================================" | tee -a "$LOG"
-    echo "ABLATION-2: {{dataset}}"                                      | tee -a "$LOG"
+    echo "ABLATION: {{dataset}}"                                      | tee -a "$LOG"
     echo "  Model variants:  $MODEL_VARIANTS"                           | tee -a "$LOG"
     echo "  Reward variants: $REWARD_VARIANTS"                          | tee -a "$LOG"
     echo "  Train: $TRAIN"                                              | tee -a "$LOG"
@@ -622,7 +622,7 @@ run-ablations dataset:
     # ---- Summary ----
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "ABLATION-2 COMPLETE: {{dataset}}"                             | tee -a "$LOG"
+    echo "ABLATION COMPLETE: {{dataset}}"                             | tee -a "$LOG"
     echo "  Model ablation: $MODEL_BASE/"                               | tee -a "$LOG"
     echo "  Reward ablation: $REWARD_BASE/"                             | tee -a "$LOG"
     echo "  Per variant:"                                               | tee -a "$LOG"
