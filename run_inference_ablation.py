@@ -146,6 +146,7 @@ def evaluate_dataset(data, output_dir, llm_model, tokenizer, top_k):
             detailed_results.append({
                 "id": i,
                 "question": question,
+                "raw_response": raw_prediction,
                 "prediction": prediction,
                 "ground_truth": answer,
                 "hit@1": hit1,

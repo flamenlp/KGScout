@@ -224,6 +224,7 @@ def evaluate_dataset_vllm(data, output_dir, llm, sampling_params, top_k):
                 "question": question,
                 "prediction": prediction,
                 "ground_truth": answer,
+                "raw_response": raw_prediction,
                 "hit@1": hit1,
                 "hit": hit,
                 "f1": f1,

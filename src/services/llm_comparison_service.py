@@ -172,6 +172,7 @@ class LLMComparisonService:
 
                 detailed_results.append({
                     "question": question,
+                    "raw_response": raw_prediction,
                     "prediction": prediction,
                     "ground_truth": answer,
                     "hit": hit,
