@@ -17,11 +17,9 @@ class PathRankingModel(nn.Module):
       → question attends over triplets, producing 1×d summary + N attention weights
     - Question-relation attention: Query=Question(1,d), Key=Value=Relations(N,d)
       → question attends over relations, producing 1×d summary + N attention weights
-    - Gate network (3-layer MLP with sigmoid output)
-      → combines triplet and relation attention weights via learned gate
-    - Triplet-centric scorer (3-layer MLP)
-    - Relation-centric scorer (3-layer MLP)
-    - Combiner network (2-layer MLP) - takes tower_A, tower_B, gated_attention_weights
+    - Triplet-centric scorer (3-layer MLP) — receives triplet attention weights as input
+    - Relation-centric scorer (3-layer MLP) — receives relation attention weights as input
+    - Combiner network (2-layer MLP) - takes tower_A and tower_B scores
     - Learnable temperature and baseline parameters
     """
     
@@ -47,21 +45,10 @@ class PathRankingModel(nn.Module):
             dropout=0.1
         )
         
-        # Gate network (3-layer MLP with sigmoid output)
-        self.gate_network = nn.Sequential(
-            nn.Linear(self.hidden_size * 3, self.hidden_size),
-            nn.LayerNorm(self.hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.hidden_size, self.hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(self.hidden_size // 2, 1),
-            nn.Sigmoid()
-        )
-        
         # Triplet-centric scorer (3-layer MLP)
+        # Input: triplet_embeds(d) + triplet_attended(d) + question(d) + graph_scores(2) + triplet_attn_weight(1)
         self.triplet_mlp = nn.Sequential(
-            nn.Linear(hidden_size * 3 + 2, hidden_size),
+            nn.Linear(hidden_size * 3 + 3, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.ReLU(),
             nn.Dropout(0.1),
@@ -71,8 +58,9 @@ class PathRankingModel(nn.Module):
         )
         
         # Relation-centric scorer (3-layer MLP)
+        # Input: relation_embeds(d) + relation_attended(d) + question(d) + graph_scores(2) + relation_attn_weight(1)
         self.relation_mlp = nn.Sequential(
-            nn.Linear(hidden_size * 3 + 2, hidden_size),
+            nn.Linear(hidden_size * 3 + 3, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.ReLU(),
             nn.Dropout(0.1),
@@ -81,9 +69,9 @@ class PathRankingModel(nn.Module):
             nn.Linear(hidden_size // 2, 1)
         )
         
-        # Combiner network (2-layer MLP)
+        # Combiner network (2-layer MLP) - takes tower_A and tower_B scores
         self.combiner_mlp = nn.Sequential(
-            nn.Linear(3, hidden_size // 2),
+            nn.Linear(2, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_size // 2, 1)
@@ -138,37 +126,30 @@ class PathRankingModel(nn.Module):
         # Expand question to match number of triplets
         question_expanded = question_embed.expand(num_triplets, -1)
         
-        # Compute gate values
-        gate_input = torch.cat([question_expanded, triplet_embeds, relation_embeds], dim=-1)
-        path_gates = self.gate_network(gate_input).squeeze(-1)
-        
-        # Gated combination of attention weights:
-        # w_i = σ_i * triplet_weights_i + (1 - σ_i) * relation_weights_i
-        gated_attention_weights = path_gates * triplet_weights + (1 - path_gates) * relation_weights
-        
-        # Tower A: Triplet-centric score
+        # Tower A: Triplet-centric score (with triplet attention weight as input)
         triplet_centric_input = torch.cat([
             triplet_embeds,
             triplet_attended,
             question_expanded,
-            graph_scores
+            graph_scores,
+            triplet_weights.unsqueeze(-1)
         ], dim=-1)
         tower_A_scores = self.triplet_mlp(triplet_centric_input).squeeze(-1)
         
-        # Tower B: Relation-centric score
+        # Tower B: Relation-centric score (with relation attention weight as input)
         relation_centric_input = torch.cat([
             relation_embeds,
             relation_attended,
             question_expanded,
-            graph_scores
+            graph_scores,
+            relation_weights.unsqueeze(-1)
         ], dim=-1)
         tower_B_scores = self.relation_mlp(relation_centric_input).squeeze(-1)
         
-        # Combiner takes 3 signals: tower_A, tower_B, gated_attention_weight
+        # Combiner takes 2 signals: tower_A and tower_B
         combiner_input = torch.stack([
             tower_A_scores,
             tower_B_scores,
-            gated_attention_weights,
         ], dim=-1)
         combined_scores = self.combiner_mlp(combiner_input).squeeze(-1)
         
@@ -242,7 +223,6 @@ class PathRankingModel(nn.Module):
         path_state = {
             'question_triplet_attention': self.question_triplet_attention.state_dict(),
             'question_relation_attention': self.question_relation_attention.state_dict(),
-            "gate_network": self.gate_network.state_dict(),
             "triplet_mlp": self.triplet_mlp.state_dict(),
             "relation_mlp": self.relation_mlp.state_dict(),
             "combiner_mlp": self.combiner_mlp.state_dict(),
@@ -301,7 +281,6 @@ class PathRankingModel(nn.Module):
         required_components = [
             'question_triplet_attention',
             'question_relation_attention',
-            'gate_network',
             'triplet_mlp',
             'relation_mlp',
             'combiner_mlp',
@@ -324,7 +303,6 @@ class PathRankingModel(nn.Module):
         try:
             model.question_triplet_attention.load_state_dict(extra_state['question_triplet_attention'])
             model.question_relation_attention.load_state_dict(extra_state['question_relation_attention'])
-            model.gate_network.load_state_dict(extra_state['gate_network'])
             model.triplet_mlp.load_state_dict(extra_state['triplet_mlp'])
             model.relation_mlp.load_state_dict(extra_state['relation_mlp'])
             model.combiner_mlp.load_state_dict(extra_state['combiner_mlp'])

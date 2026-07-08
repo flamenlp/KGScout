@@ -24,9 +24,8 @@ def compute_reward_v8(
     This function evaluates the quality of selected triplets by measuring:
     1. Fractional answer presence: Fraction of answer entities in the graph
     2. Graded connectivity: Max connectivity score across Q-A pairs using shortest paths
-    3. Path coverage: Fraction of shortest path edges covered by selected triplets
     
-    The reward components are combined with weights (w_pres=3, w_conn=4, w_cov=3)
+    The reward components are combined with weights (w_pres=6, w_conn=4)
     and capped at a maximum of 10.0.
     
     Args:
@@ -40,16 +39,6 @@ def compute_reward_v8(
     
     Returns:
         float: Computed reward value, capped at 10.0
-    
-    Requirements:
-        - 3.7: Compute rewards using compute_reward_v8 function
-        - 9.1: Implement compute_reward_v8 function using NetworkX
-        - 9.2: Build bidirectional graphs from triplets
-        - 9.3: Calculate fractional answer presence
-        - 9.4: Calculate graded connectivity scores
-        - 9.5: Calculate path coverage scores
-        - 9.6: Combine reward components with weights (w_pres=3, w_conn=4, w_cov=3)
-        - 9.7: Cap maximum reward at 10.0
     """
     # Handle empty triplets case
     if not triplets:
@@ -84,33 +73,8 @@ def compute_reward_v8(
             conn = max(0.0, 1.0 - lambda_lin * (d - 1))
             conn_score = max(conn_score, conn)
 
-    # 3. Path Coverage
-    # Compute what fraction of shortest path edges are covered by selected triplets
-    triplet_pairs = {tuple((s.lower(), o.lower())) for s, _, o in triplets}
-    
-    cov_scores = []
-    for q in q_entities:
-        for a in a_entities:
-            qn, an = q.lower(), a.lower()
-            try:
-                path = nx.shortest_path(G, qn, an)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                continue
-            if len(path) < 2:
-                continue
-            # Count how many edges in the path are in our selected triplets
-            matches = sum(1 for u, v in zip(path, path[1:]) if tuple((u, v)) in triplet_pairs)
-            cov_scores.append(matches / (len(path) - 1))
-
-    path_cov = max(cov_scores) if cov_scores else 0.0
-
-    # Combine components with specified weights
-    w_pres, w_conn, w_cov = 3, 4, 3
-    total = (
-        w_pres * frac_presence
-        + w_conn * conn_score
-        + w_cov * path_cov
-    )
+    # Combine components with specified weights (6/4 weighting)
+    total = 6.0 * frac_presence + 4.0 * conn_score
 
     # Cap maximum reward at 10.0
     return min(total, 10.0)
