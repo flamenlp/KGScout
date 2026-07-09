@@ -307,7 +307,8 @@ def run_evaluate_command(args):
     metrics = service.evaluate(
         model_path=args.model_path,
         test_data_path=args.test_data,
-        top_k=args.top_k
+        top_k=args.top_k,
+        sample_k=args.sample_k
     )
     
     # Print metrics
@@ -833,6 +834,12 @@ Examples:
         type=int,
         default=100,
         help='Number of top triplets to evaluate (default: 100)'
+    )
+    evaluate_parser.add_argument(
+        '--sample-k',
+        type=int,
+        default=1000,
+        help='Number of top triplets to feed to model as candidate pool (default: 1000)'
     )
     
     # ========================================================================

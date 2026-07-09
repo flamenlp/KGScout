@@ -13,6 +13,7 @@ from typing import Dict, Any
 
 from src.model.path_ranker import PathRankingModel
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.testing.evaluator import Evaluator
 
 
@@ -22,7 +23,7 @@ class EvaluateService:
     
     Handles:
     - Loading trained model checkpoints
-    - Processing test data
+    - Processing test data through SampledJointTrainingDataset (top-N filtering)
     - Computing evaluation metrics
     """
     
@@ -96,12 +97,17 @@ class EvaluateService:
         
         return path_ranker
     
-    def load_test_data(self, test_data_path: str):
+    def load_test_data(self, test_data_path: str, sample_k: int = 1000):
         """
         Load and preprocess test data.
         
+        Wraps data in SampledJointTrainingDataset to limit to top-N triplets
+        per question (matching training and inference pipelines).
+        
         Args:
             test_data_path: Path to test data file (.pt)
+            sample_k: Number of top triplets to keep per question (default: 1000).
+                      Matches the pool size used during training and inference.
         
         Returns:
             DataLoader for test data
@@ -118,18 +124,21 @@ class EvaluateService:
         # If already a Dataset, use directly; otherwise wrap
         from torch.utils.data import Dataset
         if isinstance(test_data, Dataset):
-            test_dataset = test_data
+            base_dataset = test_data
         else:
             print("\nCreating test dataset with PPR features...")
-            test_dataset = JointTrainingDatasetv3PPR(test_data, device=self.device)
+            base_dataset = JointTrainingDatasetv3PPR(test_data, device=self.device)
+        
+        # Wrap in SampledJointTrainingDataset to limit to top sample_k triplets
+        # This matches the pipeline used in training and triplet selection
+        print(f"Applying SampledJointTrainingDataset (N={sample_k})...")
+        sampled_dataset = SampledJointTrainingDataset(base_dataset, k=sample_k)
         
         # Create dataloader
-        collate_fn = self._create_collate_fn()
         test_loader = DataLoader(
-            test_dataset,
+            sampled_dataset,
             batch_size=1,
             shuffle=False,
-            collate_fn=collate_fn
         )
         
         return test_loader
@@ -138,7 +147,8 @@ class EvaluateService:
         self,
         model_path: str,
         test_data_path: str,
-        top_k: int
+        top_k: int,
+        sample_k: int = 1000
     ) -> Dict[str, float]:
         """
         Evaluate model on test data.
@@ -146,7 +156,8 @@ class EvaluateService:
         Args:
             model_path: Path to trained model checkpoint
             test_data_path: Path to test data file
-            top_k: Number of top triplets to evaluate
+            top_k: Number of top triplets to select from model output
+            sample_k: Number of top triplets to feed to model (pool size, default: 1000)
         
         Returns:
             Dictionary with evaluation metrics:
@@ -159,8 +170,8 @@ class EvaluateService:
         # Load model
         path_ranker = self.load_model(model_path)
         
-        # Load test data
-        test_loader = self.load_test_data(test_data_path)
+        # Load test data (with SampledJointTrainingDataset filtering)
+        test_loader = self.load_test_data(test_data_path, sample_k=sample_k)
         
         # Create a lightweight wrapper — Evaluator only needs trainer.path_ranker
         class _ModelHolder:
@@ -173,7 +184,7 @@ class EvaluateService:
         evaluator = Evaluator(device=self.device)
         
         # Run evaluation
-        print(f"\nRunning evaluation with top-{top_k} triplets...")
+        print(f"\nRunning evaluation with top-{top_k} triplets (from pool of {sample_k})...")
         metrics = evaluator.evaluate_answer_and_path_coverage(
             test_dataloader=test_loader,
             trainer=trainer,
