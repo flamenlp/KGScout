@@ -749,8 +749,8 @@ Examples:
     train_parser.add_argument(
         '--gradient-accumulation-steps',
         type=int,
-        default=8,
-        help='Number of gradient accumulation steps (default: 8)'
+        default=32,
+        help='Number of gradient accumulation steps (default: 32)'
     )
     train_parser.add_argument(
         '--validation-interval',

@@ -8,6 +8,7 @@ and main training phases.
 import os
 import pickle
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 from typing import Dict, Any, Optional
 
@@ -17,6 +18,9 @@ from src.preprocess.pretrain_dataset import CosinePretrainingDataset
 from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.training.pretrainer import Pretrainer
 from src.training.trainer import Trainer
+
+# Match ablation-2 seed for reproducibility
+SEED = 100
 
 
 class TrainService:
@@ -376,20 +380,26 @@ class TrainService:
         """
         print(f"Using device: {self.device}")
         
+        # Set seeds for reproducibility (matches ablation-2)
+        torch.manual_seed(SEED)
+        np.random.seed(SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(SEED)
+        
         # Load data
         train_data, val_data = self.load_data(train_data_path, val_data_path)
         
         # Create base datasets
         train_base_dataset, val_base_dataset = self.create_base_datasets(train_data, val_data)
         
-        # Run pretraining
+        # Run pretraining (uses accum=8, matching ablation-2)
         pretrained_model_path = self.run_pretraining(
             train_base_dataset,
             val_base_dataset,
             checkpoint_dir,
             learning_rate,
             weight_decay,
-            gradient_accumulation_steps,
+            8,  # pretraining always uses accum=8 (matches ablation-2)
             validation_interval
         )
         
