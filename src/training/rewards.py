@@ -74,7 +74,7 @@ def compute_reward_v8(
             conn_score = max(conn_score, conn)
 
     # Combine components with specified weights (6/4 weighting)
-    total = 4.0 * frac_presence + 6.0 * conn_score
+    total = 3.0 * frac_presence + 4.0 * conn_score
 
     # Cap maximum reward at 10.0
     return min(total, 10.0)
