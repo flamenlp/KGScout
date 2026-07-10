@@ -178,26 +178,40 @@ class Pretrainer:
                     optimizer.step()
                     optimizer.zero_grad()
 
-            # Flush remaining gradients
+            # Flush remaining gradients (no clipping on flush, matching ablation-2)
             if valid_batches % gradient_accumulation_steps != 0:
-                torch.nn.utils.clip_grad_norm_(self.path_ranker.parameters(), 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
 
             avg_train_loss = epoch_loss / max(valid_batches, 1)
             print(f"    Train Loss: {avg_train_loss:.4f}")
 
-            # --- Validation ---
+            # --- Validation (only 0.5*MSE, matching ablation-2) ---
             if val_dataloader is not None:
                 self.path_ranker.eval()
                 val_loss = 0.0
                 val_count = 0
                 with torch.no_grad():
                     for batch in val_dataloader:
-                        loss = self.train_step(batch)
-                        if loss is None:
+                        if batch is None:
                             continue
-                        val_loss += loss.item()
+                        question_embed = batch["question_embedding"].to(self.device)
+                        if "path_embeddings" in batch:
+                            path_embeds = batch["path_embeddings"].to(self.device)
+                        else:
+                            path_embeds = batch["topk_linearized_triplet_embeddings"].to(self.device)
+                        if "rel_embeddings" in batch:
+                            rel_embeds = batch["rel_embeddings"].to(self.device)
+                        else:
+                            rel_embeds = batch["topK_rel_embeddings"].to(self.device)
+                        cosine_targets = batch["cosine_targets"].to(self.device)
+                        graph_features = batch["graph_features"].to(self.device)
+
+                        predicted_scores, _ = self.path_ranker(
+                            question_embed.unsqueeze(0), path_embeds, rel_embeds, graph_features
+                        )
+                        # Only 0.5 * MSE for validation (matches ablation-2)
+                        val_loss += (0.5 * self.mse_loss(predicted_scores, cosine_targets)).item()
                         val_count += 1
 
                 avg_val_loss = val_loss / max(val_count, 1)
@@ -207,8 +221,6 @@ class Pretrainer:
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     self._save_checkpoint(epoch + 1)
-            else:
-                scheduler.step(avg_train_loss)
 
         # Always save final checkpoint
         self._save_checkpoint(num_epochs)

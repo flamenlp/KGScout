@@ -9,7 +9,6 @@ and field names compatible with the Pretrainer.
 import torch
 from torch.utils.data import Dataset
 from typing import Dict, Optional
-import random
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,8 +53,11 @@ class CosinePretrainingDataset(Dataset):
             logger.warning(f"Sample {idx}: Failed to load from base dataset: {e}")
             return None
 
-        # Check for empty samples
+        # Check for empty samples (matching ablation-2 conditions)
         if data.get("is_empty", False):
+            return None
+
+        if len(data.get("topk_linearized_triplets", [])) == 0 or len(data.get("q_entity", [])) == 0:
             return None
 
         # Get available triplet count
@@ -69,16 +71,10 @@ class CosinePretrainingDataset(Dataset):
         # Determine how many to use
         n = min(self.k, num_triplets)
 
-        # Sample indices (random subset if k < available)
-        if n < num_triplets:
-            indices = sorted(random.sample(range(num_triplets), n))
-            path_embeds = data["topk_linearized_triplet_embeddings"][indices]
-            rel_embeds = data["topK_rel_embeddings"][indices]
-            graph_feats = data["graph_features"][indices]
-        else:
-            path_embeds = data["topk_linearized_triplet_embeddings"][:n]
-            rel_embeds = data["topK_rel_embeddings"][:n]
-            graph_feats = data["graph_features"][:n]
+        # Always take first k triplets (ordered by cosine similarity, matching ablation-2)
+        path_embeds = data["topk_linearized_triplet_embeddings"][:n]
+        rel_embeds = data["topK_rel_embeddings"][:n]
+        graph_feats = data["graph_features"][:n]
 
         return {
             "question_embedding": data["question_embedding"],
