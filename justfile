@@ -3,6 +3,11 @@
 #
 # Usage: just k-ablation cwq
 #        just k-ablation webqsp
+#        just full-pipeline metaqa          (uses default 2-hop)
+#        just full-pipeline metaqa 100 1000 (override top-k and sample-k)
+
+# Default MetaQA hop (used when dataset=metaqa)
+metaqa_dataset_hop := "2"
 
 # ============================================================================
 # K-ABLATION: Train k=30,50,100,150 → Triplet Analysis → vLLM Inference
@@ -233,10 +238,81 @@ k-ablation-cosine dataset:
 
 
 # ============================================================================
+# PREPROCESS-METAQA: Download & preprocess MetaQA data for training
+# ============================================================================
+# Usage: just preprocess-metaqa          (default: 2-hop)
+#        just preprocess-metaqa 3        (override hop)
+
+preprocess-metaqa hop=metaqa_dataset_hop:
+    #!/usr/bin/env bash
+
+    echo "============================================================"
+    echo "PREPROCESS MetaQA {{hop}}-hop"
+    echo "============================================================"
+
+    # Read paths from config.yml using helper script
+    YAML_OUT=$(python3 scripts/read_metaqa_config.py "{{hop}}")
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for metaqa {{hop}}-hop"
+        exit 1
+    fi
+
+    KB_PATH=$(echo "$YAML_OUT" | sed -n '1p')
+    QA_TRAIN=$(echo "$YAML_OUT" | sed -n '2p')
+    QA_DEV=$(echo "$YAML_OUT" | sed -n '3p')
+    QA_TEST=$(echo "$YAML_OUT" | sed -n '4p')
+    OUTPUT_DIR=$(echo "$YAML_OUT" | sed -n '5p')
+    EMBED_MODEL=$(echo "$YAML_OUT" | sed -n '6p')
+
+    # Check if raw data exists
+    if [ ! -f "$KB_PATH" ]; then
+        echo "ERROR: kb.txt not found at: $KB_PATH"
+        echo "Please download MetaQA dataset first."
+        echo "  See: https://github.com/yuyuz/MetaQA"
+        echo "  Place files in data/metaqa/ with structure:"
+        echo "    data/metaqa/kb.txt"
+        echo "    data/metaqa/{1,2,3}-hop/vanilla/qa_{train,dev,test}.txt"
+        exit 1
+    fi
+
+    # Check if already preprocessed
+    TRAIN_FILE="$OUTPUT_DIR/metaqa-{{hop}}hop-train.pt"
+    if [ -f "$TRAIN_FILE" ]; then
+        echo "Preprocessed data already exists: $TRAIN_FILE"
+        echo "Delete it to re-run preprocessing."
+        exit 0
+    fi
+
+    echo "  KB:       $KB_PATH"
+    echo "  Train:    $QA_TRAIN"
+    echo "  Dev:      $QA_DEV"
+    echo "  Test:     $QA_TEST"
+    echo "  Output:   $OUTPUT_DIR"
+    echo "  Embed:    $EMBED_MODEL"
+    echo "============================================================"
+
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path "$KB_PATH" \
+        --qa-train-path "$QA_TRAIN" \
+        --qa-dev-path "$QA_DEV" \
+        --qa-test-path "$QA_TEST" \
+        --output-dir "$OUTPUT_DIR" \
+        --hop {{hop}} \
+        --embedding-model "$EMBED_MODEL"
+
+    echo ""
+    echo "============================================================"
+    echo "PREPROCESSING COMPLETE"
+    echo "============================================================"
+
+
+# ============================================================================
 # FULL-PIPELINE: Train → Coverage → Triplet Selection → vLLM Inference
 # ============================================================================
 # Usage: just full-pipeline cwq
 #        just full-pipeline webqsp
+#        just full-pipeline metaqa          (uses default 2-hop from config)
 #        just full-pipeline cwq 50       (override top-k, default from config.yml)
 #        just full-pipeline cwq 50 500   (override top-k and sample-k)
 
@@ -244,7 +320,12 @@ full-pipeline dataset topk="" samplek="":
     #!/usr/bin/env bash
 
     # --- Read paths from config.yml ---
-    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+    # For metaqa, pass the hop argument to resolve hop-specific paths
+    if [ "{{dataset}}" = "metaqa" ]; then
+        YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}" "{{metaqa_dataset_hop}}")
+    else
+        YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+    fi
 
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"

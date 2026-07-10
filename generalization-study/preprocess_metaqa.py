@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """
-Preprocess MetaQA dataset into KGScout-compatible format.
+Preprocess MetaQA dataset into KGScout JointTrainer-compatible format.
 
-Takes the raw MetaQA files (kb.txt + qa_test.txt) and produces a .pt file
-with the same structure KGScout expects:
+This script curates training/validation/test subsets from MetaQA with
+specific distribution constraints for effective model training:
+
+Training (4000 samples) & Validation (500 samples):
+  - Condition 1 (MUST): ≥75% samples have a path between q_entity and a_entity
+    in the top-1000 cosine-ranked triplets.
+  - Condition 2 (GOOD TO HAVE): ≥10% samples have NO path between q_entity
+    and a_entity in top-1000 triplets.
+  - Condition 3 (GOOD TO HAVE): ≥15 samples where only a_entity is present
+    in top-1000 triplets (but no path from q_entity to a_entity).
+  - All question types present in the dataset must be represented.
+
+Test: Full test set (no subsampling).
+
+Output format: List of dicts compatible with JointTrainingDatasetv3PPR:
   - question, q_entity, a_entity, answer
   - question_embedding (384-dim, sentence-transformers)
   - topk_linearized_triplets (cosine-sorted triplet strings)
@@ -14,27 +27,55 @@ with the same structure KGScout expects:
 
 Pipeline:
 1. Load KG from kb.txt → build networkx graph
-2. Load qa_test.txt → extract topic entities and answers
+2. Load QA file → extract topic entities and answers
 3. For each question: BFS from topic entity to get candidate subgraph
-4. Compute embeddings (question + triplets + relations) using sentence-transformers
-5. Rank triplets by cosine similarity to question → top-N
-6. Save as .pt file
+4. Compute embeddings (question + triplets + relations)
+5. Rank triplets by cosine similarity → top-N
+6. Classify samples by path/coverage properties
+7. Sample according to distribution constraints
+8. Save as .pt file
+
+Usage:
+    # Preprocess 2-hop training data (curated 4000 subset)
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path data/metaqa/kb.txt \
+        --qa-train-path data/metaqa/2-hop/vanilla/qa_train.txt \
+        --qa-dev-path data/metaqa/2-hop/vanilla/qa_dev.txt \
+        --qa-test-path data/metaqa/2-hop/vanilla/qa_test.txt \
+        --output-dir data/metaqa/processed \
+        --hop 2
+
+    # Preprocess 3-hop
+    python generalization-study/preprocess_metaqa.py \
+        --kb-path data/metaqa/kb.txt \
+        --qa-train-path data/metaqa/3-hop/vanilla/qa_train.txt \
+        --qa-dev-path data/metaqa/3-hop/vanilla/qa_dev.txt \
+        --qa-test-path data/metaqa/3-hop/vanilla/qa_test.txt \
+        --output-dir data/metaqa/processed \
+        --hop 3
 """
 
 import os
 import sys
 import re
 import argparse
+import random
 import torch
 import numpy as np
 import networkx as nx
 from collections import defaultdict
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Set
 from tqdm import tqdm
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+SEED = 42
+
+
+# =============================================================================
+# KG Loading
+# =============================================================================
 
 def load_kg(kb_path: str) -> Tuple[nx.DiGraph, Dict[str, List[Tuple[str, str, str]]]]:
     """
@@ -42,8 +83,10 @@ def load_kg(kb_path: str) -> Tuple[nx.DiGraph, Dict[str, List[Tuple[str, str, st
     Format: subject|relation|object (one per line)
 
     Returns:
-        graph: NetworkX directed graph
-        entity_to_triplets: mapping from entity (lowercase) to list of triplets involving it
+        graph: NetworkX directed graph (edges stored directionally,
+               but BFS traverses both directions for reachability)
+        entity_to_triplets: mapping from entity (lowercase) to list of
+                           triplets involving it
     """
     graph = nx.DiGraph()
     entity_to_triplets = defaultdict(list)
@@ -57,7 +100,11 @@ def load_kg(kb_path: str) -> Tuple[nx.DiGraph, Dict[str, List[Tuple[str, str, st
             if len(parts) != 3:
                 continue
             s, r, o = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            # Store edges in both directions for undirected BFS traversal
+            # MetaQA KG relations are traversable in both directions for
+            # multi-hop reasoning (e.g., "starred_actors" can be reversed)
             graph.add_edge(s.lower(), o.lower(), relation=r)
+            graph.add_edge(o.lower(), s.lower(), relation=f"{r}_reverse")
             triplet = (s, r, o)
             entity_to_triplets[s.lower()].append(triplet)
             entity_to_triplets[o.lower()].append(triplet)
@@ -65,6 +112,10 @@ def load_kg(kb_path: str) -> Tuple[nx.DiGraph, Dict[str, List[Tuple[str, str, st
     print(f"KG loaded: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
     return graph, entity_to_triplets
 
+
+# =============================================================================
+# QA File Loading
+# =============================================================================
 
 def load_qa_file(qa_path: str) -> List[Dict]:
     """
@@ -95,7 +146,7 @@ def load_qa_file(qa_path: str) -> List[Dict]:
                 "question": clean_question,
                 "question_raw": question,
                 "q_entity": q_entities,
-                "a_entity": answers,  # In MetaQA, answers ARE the answer entities
+                "a_entity": answers,
                 "answer": answers,
             })
 
@@ -103,16 +154,26 @@ def load_qa_file(qa_path: str) -> List[Dict]:
     return samples
 
 
+# =============================================================================
+# Subgraph Extraction (BFS)
+# =============================================================================
+
 def extract_subgraph_triplets(
     graph: nx.DiGraph,
     entity_to_triplets: Dict,
     topic_entities: List[str],
     hop: int,
-    max_triplets: int = 1000
 ) -> List[Tuple[str, str, str]]:
     """
-    Extract candidate triplets via BFS from topic entities up to `hop` hops.
-    Returns deduplicated triplets (up to max_triplets).
+    Extract ALL candidate triplets via BFS from topic entities up to `hop` hops.
+
+    The BFS traverses the graph in BOTH directions (successors + predecessors)
+    since MetaQA reasoning paths can traverse relations in either direction.
+    After BFS, we collect all ORIGINAL triplets (not reversed) that involve
+    the visited nodes.
+
+    Returns ALL deduplicated triplets from the subgraph. The caller is
+    responsible for cosine-ranking and selecting top-k.
     """
     visited_nodes = set()
     frontier = set()
@@ -122,12 +183,11 @@ def extract_subgraph_triplets(
         if e_lower in graph:
             frontier.add(e_lower)
 
-    # BFS up to `hop` levels
+    # BFS up to `hop` levels (traversing both directions)
     for _ in range(hop):
         next_frontier = set()
         for node in frontier:
             visited_nodes.add(node)
-            # Get successors and predecessors
             for neighbor in graph.successors(node):
                 if neighbor not in visited_nodes:
                     next_frontier.add(neighbor)
@@ -138,8 +198,8 @@ def extract_subgraph_triplets(
 
     visited_nodes.update(frontier)
 
-    # Collect all triplets that involve visited nodes
-    # Prioritize topic entity's direct triplets first to ensure they're not cut off
+    # Collect ORIGINAL triplets (not reversed) that involve visited nodes
+    # Prioritize topic entity's direct triplets first
     seen_triplets = set()
     triplets = []
 
@@ -160,9 +220,12 @@ def extract_subgraph_triplets(
                 seen_triplets.add(triplet_key)
                 triplets.append(triplet)
 
-    # Limit to max_triplets
-    return triplets[:max_triplets]
+    return triplets
 
+
+# =============================================================================
+# Embedding Computation
+# =============================================================================
 
 def compute_embeddings(
     texts: List[str],
@@ -178,61 +241,266 @@ def compute_embeddings(
     return torch.cat(all_embeddings, dim=0)
 
 
-def preprocess_metaqa(
-    kb_path: str,
-    qa_path: str,
-    output_dir: str,
+# =============================================================================
+# Sample Classification (for distribution constraints)
+# =============================================================================
+
+def classify_sample(
+    triplets: List[Tuple[str, str, str]],
+    q_entities: List[str],
+    a_entities: List[str],
+) -> str:
+    """
+    Classify a sample based on path/coverage properties in top-1000 triplets.
+
+    Categories:
+      - "path_exists": Path exists between q_entity and a_entity in triplet graph
+      - "a_entity_only": a_entity present in triplets but NO path from q_entity
+      - "no_path": No path exists and a_entity may or may not be present
+
+    Uses undirected graph for path checking (consistent with compute_path_coverage).
+    """
+    if not triplets or not q_entities or not a_entities:
+        return "no_path"
+
+    # Build undirected graph from triplets
+    G = nx.Graph()
+    for s, r, o in triplets:
+        G.add_edge(s.lower(), o.lower())
+
+    # Check entities in graph
+    graph_nodes = set(G.nodes())
+    a_entities_lower = [a.lower() for a in a_entities]
+    q_entities_lower = [q.lower() for q in q_entities]
+
+    # Check if path exists between any q_entity and any a_entity
+    path_exists = False
+    for q in q_entities_lower:
+        for a in a_entities_lower:
+            if q not in graph_nodes or a not in graph_nodes:
+                continue
+            try:
+                if nx.has_path(G, q, a):
+                    path_exists = True
+                    break
+            except nx.NetworkXError:
+                continue
+        if path_exists:
+            break
+
+    if path_exists:
+        return "path_exists"
+
+    # Check if any a_entity is at least present in the graph nodes
+    a_present = any(a in graph_nodes for a in a_entities_lower)
+    if a_present:
+        return "a_entity_only"
+
+    return "no_path"
+
+
+def get_question_type(question_raw: str) -> str:
+    """
+    Extract the question template/type from a MetaQA question.
+    MetaQA has fixed question templates per hop. We extract the template
+    by replacing the entity in brackets with a placeholder.
+    """
+    return re.sub(r'\[([^\]]+)\]', '[ENTITY]', question_raw)
+
+
+# =============================================================================
+# Curated Sampling with Distribution Constraints
+# =============================================================================
+
+def curate_subset(
+    classified_samples: List[Tuple[Dict, str, str]],
+    target_size: int,
+    min_path_fraction: float = 0.75,
+    min_no_path_fraction: float = 0.10,
+    min_a_entity_only: int = 15,
+) -> List[Dict]:
+    """
+    Sample a subset satisfying distribution constraints.
+
+    Args:
+        classified_samples: List of (processed_entry, category, question_type)
+        target_size: Total samples to select
+        min_path_fraction: Minimum fraction of "path_exists" samples (Condition 1)
+        min_no_path_fraction: Minimum fraction of "no_path" samples (Condition 2)
+        min_a_entity_only: Minimum count of "a_entity_only" samples (Condition 3)
+
+    Returns:
+        Curated list of processed entries
+    """
+    # Group by category
+    path_exists_samples = []
+    no_path_samples = []
+    a_entity_only_samples = []
+
+    for entry, category, qtype in classified_samples:
+        if category == "path_exists":
+            path_exists_samples.append((entry, qtype))
+        elif category == "no_path":
+            no_path_samples.append((entry, qtype))
+        elif category == "a_entity_only":
+            a_entity_only_samples.append((entry, qtype))
+
+    print(f"\n  Category distribution (total available):")
+    print(f"    path_exists:   {len(path_exists_samples)}")
+    print(f"    no_path:       {len(no_path_samples)}")
+    print(f"    a_entity_only: {len(a_entity_only_samples)}")
+
+    # Calculate targets
+    min_path_count = int(target_size * min_path_fraction)
+    min_no_path_count = int(target_size * min_no_path_fraction)
+
+    # Get all question types across all categories
+    all_qtypes = set()
+    for _, qtype in path_exists_samples:
+        all_qtypes.add(qtype)
+    for _, qtype in no_path_samples:
+        all_qtypes.add(qtype)
+    for _, qtype in a_entity_only_samples:
+        all_qtypes.add(qtype)
+
+    print(f"  Question types found: {len(all_qtypes)}")
+    print(f"  Targets: path≥{min_path_count}, no_path≥{min_no_path_count}, a_only≥{min_a_entity_only}")
+
+    # Step 1: Ensure all question types are represented
+    # Take at least 1 sample per question type from path_exists (since it's the largest)
+    selected = []
+    selected_indices = set()
+
+    # Group path_exists by question type
+    path_by_qtype = defaultdict(list)
+    for i, (entry, qtype) in enumerate(path_exists_samples):
+        path_by_qtype[qtype].append((i, entry))
+
+    no_path_by_qtype = defaultdict(list)
+    for i, (entry, qtype) in enumerate(no_path_samples):
+        no_path_by_qtype[qtype].append((i, entry))
+
+    a_only_by_qtype = defaultdict(list)
+    for i, (entry, qtype) in enumerate(a_entity_only_samples):
+        a_only_by_qtype[qtype].append((i, entry))
+
+    # Ensure each question type has at least 2 samples from path_exists
+    path_selected_indices = set()
+    for qtype, items in path_by_qtype.items():
+        take = min(2, len(items))
+        for idx, entry in items[:take]:
+            if idx not in path_selected_indices:
+                selected.append(("path_exists", entry))
+                path_selected_indices.add(idx)
+
+    # Step 2: Fill a_entity_only quota (Condition 3)
+    a_only_selected_indices = set()
+    random.shuffle(a_entity_only_samples)
+    a_only_count = 0
+    for i, (entry, qtype) in enumerate(a_entity_only_samples):
+        if a_only_count >= min_a_entity_only:
+            break
+        selected.append(("a_entity_only", entry))
+        a_only_selected_indices.add(i)
+        a_only_count += 1
+
+    # Step 3: Fill no_path quota (Condition 2)
+    no_path_selected_indices = set()
+    random.shuffle(no_path_samples)
+    no_path_count = 0
+    for i, (entry, qtype) in enumerate(no_path_samples):
+        if no_path_count >= min_no_path_count:
+            break
+        selected.append(("no_path", entry))
+        no_path_selected_indices.add(i)
+        no_path_count += 1
+
+    # Step 4: Fill remaining with path_exists to meet ≥75% and reach target_size
+    remaining_needed = target_size - len(selected)
+    remaining_path = [
+        (i, entry) for i, (entry, qtype) in enumerate(path_exists_samples)
+        if i not in path_selected_indices
+    ]
+    random.shuffle(remaining_path)
+
+    for i, entry in remaining_path[:remaining_needed]:
+        selected.append(("path_exists", entry))
+        path_selected_indices.add(i)
+
+    # If we still don't have enough, fill from other categories
+    if len(selected) < target_size:
+        remaining_no_path = [
+            (i, entry) for i, (entry, qtype) in enumerate(no_path_samples)
+            if i not in no_path_selected_indices
+        ]
+        random.shuffle(remaining_no_path)
+        for i, entry in remaining_no_path:
+            if len(selected) >= target_size:
+                break
+            selected.append(("no_path", entry))
+
+    # Verify constraints
+    final_path_count = sum(1 for cat, _ in selected if cat == "path_exists")
+    final_no_path_count = sum(1 for cat, _ in selected if cat == "no_path")
+    final_a_only_count = sum(1 for cat, _ in selected if cat == "a_entity_only")
+
+    print(f"\n  Final distribution ({len(selected)} samples):")
+    print(f"    path_exists:   {final_path_count} ({100*final_path_count/len(selected):.1f}%)")
+    print(f"    no_path:       {final_no_path_count} ({100*final_no_path_count/len(selected):.1f}%)")
+    print(f"    a_entity_only: {final_a_only_count}")
+
+    if final_path_count / len(selected) < min_path_fraction:
+        print(f"  ⚠ WARNING: path_exists fraction ({final_path_count/len(selected):.2%}) "
+              f"is below target ({min_path_fraction:.0%})")
+
+    # Return just the entries
+    result = [entry for _, entry in selected]
+    random.shuffle(result)  # Shuffle final order
+    return result
+
+
+# =============================================================================
+# Main Processing Pipeline
+# =============================================================================
+
+def process_samples(
+    samples: List[Dict],
+    graph: nx.DiGraph,
+    entity_to_triplets: Dict,
+    embed_model,
     hop: int,
-    max_triplets: int = 1000,
-    embedding_model_name: str = "all-MiniLM-L6-v2"
-):
+    top_k_triplets: int = 1000,
+    desc: str = "Processing",
+) -> List[Tuple[Dict, str, str]]:
     """
-    Main preprocessing pipeline.
+    Process raw QA samples into JointTrainer format and classify them.
+
+    For each sample:
+    1. Extract ALL triplets from the hop-depth BFS subgraph
+    2. Cosine-rank them against the question
+    3. Take top-k (default 1000) after ranking
+    4. Classify based on path/coverage in those top-k triplets
+
+    Returns:
+        List of (processed_entry_dict, category, question_type)
     """
-    from sentence_transformers import SentenceTransformer
+    classified = []
 
-    print(f"=" * 60)
-    print(f"PREPROCESSING MetaQA {hop}-hop")
-    print(f"=" * 60)
-    print(f"KB: {kb_path}")
-    print(f"QA: {qa_path}")
-    print(f"Output: {output_dir}")
-    print(f"Max triplets per question: {max_triplets}")
-    print(f"Embedding model: {embedding_model_name}")
-    print(f"=" * 60)
-
-    # Load embedding model
-    print("\nLoading embedding model...")
-    embed_model = SentenceTransformer(embedding_model_name)
-
-    # Load KG
-    print("\nLoading knowledge graph...")
-    graph, entity_to_triplets = load_kg(kb_path)
-
-    # Load QA data
-    print("\nLoading QA data...")
-    samples = load_qa_file(qa_path)
-
-    # Process each sample
-    print(f"\nProcessing {len(samples)} samples...")
-    processed_data = []
-    skipped = 0
-
-    for idx, sample in enumerate(tqdm(samples, desc=f"Processing {hop}-hop")):
+    for sample in tqdm(samples, desc=desc):
         topic_entities = sample["q_entity"]
+        question_type = get_question_type(sample.get("question_raw", sample["question"]))
 
-        # Extract subgraph triplets
-        triplets = extract_subgraph_triplets(
-            graph, entity_to_triplets, topic_entities, hop, max_triplets
+        # Extract ALL triplets from the hop-depth BFS subgraph (no truncation)
+        all_triplets = extract_subgraph_triplets(
+            graph, entity_to_triplets, topic_entities, hop
         )
 
-        if len(triplets) == 0:
-            skipped += 1
+        if len(all_triplets) == 0:
             continue
 
-        # Linearize triplets: "subject relation object" (replace underscores in relations)
-        linearized = [
-            f"{s} {r.replace('_', ' ')} {o}" for s, r, o in triplets
+        # Linearize ALL triplets: "subject relation object"
+        all_linearized = [
+            f"{s} {r.replace('_', ' ')} {o}" for s, r, o in all_triplets
         ]
 
         # Compute question embedding
@@ -240,33 +508,44 @@ def preprocess_metaqa(
             sample["question"], convert_to_tensor=True
         ).cpu()
 
-        # Compute triplet embeddings
-        triplet_embeddings = compute_embeddings(linearized, embed_model)
-
-        # Compute relation embeddings (just the relation text)
-        relations = [r for _, r, _ in triplets]
-        relation_embeddings = compute_embeddings(relations, embed_model)
+        # Compute triplet embeddings for ALL subgraph triplets
+        all_triplet_embeddings = compute_embeddings(all_linearized, embed_model)
 
         # Compute cosine similarity scores for ranking
         q_emb_norm = question_embedding / (question_embedding.norm() + 1e-10)
-        t_emb_norm = triplet_embeddings / (triplet_embeddings.norm(dim=1, keepdim=True) + 1e-10)
+        t_emb_norm = all_triplet_embeddings / (all_triplet_embeddings.norm(dim=1, keepdim=True) + 1e-10)
         cosine_scores = torch.matmul(t_emb_norm, q_emb_norm).squeeze()
+
+        if cosine_scores.dim() == 0:
+            cosine_scores = cosine_scores.unsqueeze(0)
 
         # Sort by cosine similarity (descending)
         sorted_indices = torch.argsort(cosine_scores, descending=True)
 
-        # Reorder everything by cosine score
-        sorted_triplets = [triplets[i] for i in sorted_indices.tolist()]
-        sorted_linearized = [linearized[i] for i in sorted_indices.tolist()]
-        sorted_triplet_embeddings = triplet_embeddings[sorted_indices]
-        sorted_relation_embeddings = relation_embeddings[sorted_indices]
+        # Take top-k after cosine ranking
+        top_k = min(top_k_triplets, len(sorted_indices))
+        sorted_indices = sorted_indices[:top_k]
+
+        # Reorder and truncate to top-k
+        sorted_triplets = [all_triplets[i] for i in sorted_indices.tolist()]
+        sorted_linearized = [all_linearized[i] for i in sorted_indices.tolist()]
+        sorted_triplet_embeddings = all_triplet_embeddings[sorted_indices]
         sorted_scores = cosine_scores[sorted_indices]
+
+        # Compute relation embeddings only for the top-k triplets
+        relations = [r for _, r, _ in sorted_triplets]
+        sorted_relation_embeddings = compute_embeddings(relations, embed_model)
 
         # Build topk_rel_data: List[(score, (s, r, o))]
         topk_rel_data = [
             (sorted_scores[i].item(), sorted_triplets[i])
             for i in range(len(sorted_triplets))
         ]
+
+        # Classify sample based on path coverage in these top-k triplets
+        category = classify_sample(
+            sorted_triplets, sample["q_entity"], sample["a_entity"]
+        )
 
         processed_entry = {
             "question": sample["question"],
@@ -280,55 +559,192 @@ def preprocess_metaqa(
             "topK_rel_embeddings": sorted_relation_embeddings,
             "is_empty": False,
         }
-        processed_data.append(processed_entry)
 
-    # Save as .pt file
+        classified.append((processed_entry, category, question_type))
+
+    return classified
+
+
+def preprocess_metaqa(
+    kb_path: str,
+    qa_train_path: str,
+    qa_dev_path: str,
+    qa_test_path: str,
+    output_dir: str,
+    hop: int,
+    max_triplets: int = 1000,
+    embedding_model_name: str = "all-MiniLM-L6-v2",
+    train_size: int = 4000,
+    val_size: int = 500,
+):
+    """
+    Main preprocessing pipeline.
+
+    Produces three .pt files:
+      - metaqa-{hop}hop-train.pt  (curated train_size subset)
+      - metaqa-{hop}hop-val.pt    (curated val_size subset)
+      - metaqa-{hop}hop-test.pt   (full test set)
+    """
+    from sentence_transformers import SentenceTransformer
+
+    random.seed(SEED)
+    np.random.seed(SEED)
+
+    print(f"{'=' * 60}")
+    print(f"PREPROCESSING MetaQA {hop}-hop")
+    print(f"{'=' * 60}")
+    print(f"KB:         {kb_path}")
+    print(f"QA Train:   {qa_train_path}")
+    print(f"QA Dev:     {qa_dev_path}")
+    print(f"QA Test:    {qa_test_path}")
+    print(f"Output:     {output_dir}")
+    print(f"Max triplets: {max_triplets}")
+    print(f"Train size: {train_size}")
+    print(f"Val size:   {val_size}")
+    print(f"Embedding:  {embedding_model_name}")
+    print(f"{'=' * 60}")
+
+    # Load embedding model
+    print("\nLoading embedding model...")
+    embed_model = SentenceTransformer(embedding_model_name)
+
+    # Load KG
+    print("\nLoading knowledge graph...")
+    graph, entity_to_triplets = load_kg(kb_path)
+
+    # =========================================================================
+    # Process TRAINING set (curated subset)
+    # =========================================================================
+    print(f"\n{'=' * 60}")
+    print(f"PHASE 1: Processing TRAINING set (curating {train_size} from full train)")
+    print(f"{'=' * 60}")
+
+    train_samples = load_qa_file(qa_train_path)
+    print(f"Processing all {len(train_samples)} training samples for classification...")
+
+    train_classified = process_samples(
+        train_samples, graph, entity_to_triplets, embed_model,
+        hop, top_k_triplets=max_triplets, desc=f"Train {hop}-hop"
+    )
+
+    print(f"\nClassified {len(train_classified)} samples. Curating {train_size} subset...")
+    train_curated = curate_subset(train_classified, train_size)
+
+    # Save training data
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f"metaqa-{hop}hop-test.pt")
-    torch.save(processed_data, output_path)
+    train_output = os.path.join(output_dir, f"metaqa-{hop}hop-train.pt")
+    torch.save(train_curated, train_output)
+    print(f"\n✓ Training data saved: {train_output} ({len(train_curated)} samples)")
 
-    num_processed = len(processed_data)
-
-    # Clear memory
-    del processed_data, graph, entity_to_triplets, samples, embed_model
+    # Free memory
+    del train_classified, train_samples, train_curated
     import gc
+    gc.collect()
+
+    # =========================================================================
+    # Process VALIDATION set (curated subset)
+    # =========================================================================
+    print(f"\n{'=' * 60}")
+    print(f"PHASE 2: Processing VALIDATION set (curating {val_size} from dev)")
+    print(f"{'=' * 60}")
+
+    dev_samples = load_qa_file(qa_dev_path)
+    print(f"Processing all {len(dev_samples)} dev samples for classification...")
+
+    dev_classified = process_samples(
+        dev_samples, graph, entity_to_triplets, embed_model,
+        hop, top_k_triplets=max_triplets, desc=f"Val {hop}-hop"
+    )
+
+    print(f"\nClassified {len(dev_classified)} samples. Curating {val_size} subset...")
+    val_curated = curate_subset(dev_classified, val_size)
+
+    # Save validation data
+    val_output = os.path.join(output_dir, f"metaqa-{hop}hop-val.pt")
+    torch.save(val_curated, val_output)
+    print(f"\n✓ Validation data saved: {val_output} ({len(val_curated)} samples)")
+
+    # Free memory
+    del dev_classified, dev_samples, val_curated
+    gc.collect()
+
+    # =========================================================================
+    # Process TEST set (full, no subsampling)
+    # =========================================================================
+    print(f"\n{'=' * 60}")
+    print(f"PHASE 3: Processing TEST set (full)")
+    print(f"{'=' * 60}")
+
+    test_samples = load_qa_file(qa_test_path)
+    print(f"Processing all {len(test_samples)} test samples...")
+
+    test_classified = process_samples(
+        test_samples, graph, entity_to_triplets, embed_model,
+        hop, top_k_triplets=max_triplets, desc=f"Test {hop}-hop"
+    )
+
+    # For test, just extract the processed entries (no curation needed)
+    test_data = [entry for entry, _, _ in test_classified]
+
+    # Save test data
+    test_output = os.path.join(output_dir, f"metaqa-{hop}hop-test.pt")
+    torch.save(test_data, test_output)
+    print(f"\n✓ Test data saved: {test_output} ({len(test_data)} samples)")
+
+    # Free memory
+    del test_classified, test_samples, test_data
+    del graph, entity_to_triplets, embed_model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # =========================================================================
+    # Summary
+    # =========================================================================
     print(f"\n{'=' * 60}")
-    print(f"PREPROCESSING COMPLETE")
+    print(f"PREPROCESSING COMPLETE - MetaQA {hop}-hop")
     print(f"{'=' * 60}")
-    print(f"Processed: {num_processed} samples")
-    print(f"Skipped (no triplets): {skipped}")
-    print(f"Saved to: {output_path}")
-    print(f"Memory cleared.")
+    print(f"  Train: {train_output}")
+    print(f"  Val:   {val_output}")
+    print(f"  Test:  {test_output}")
     print(f"{'=' * 60}")
-
-    return output_path
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Preprocess MetaQA into KGScout format")
+    parser = argparse.ArgumentParser(
+        description="Preprocess MetaQA into KGScout JointTrainer format"
+    )
     parser.add_argument("--kb-path", type=str, required=True,
                         help="Path to MetaQA kb.txt file")
-    parser.add_argument("--qa-path", type=str, required=True,
+    parser.add_argument("--qa-train-path", type=str, required=True,
+                        help="Path to MetaQA qa_train.txt file")
+    parser.add_argument("--qa-dev-path", type=str, required=True,
+                        help="Path to MetaQA qa_dev.txt file")
+    parser.add_argument("--qa-test-path", type=str, required=True,
                         help="Path to MetaQA qa_test.txt file")
     parser.add_argument("--output-dir", type=str, required=True,
-                        help="Output directory for processed .pt file")
+                        help="Output directory for processed .pt files")
     parser.add_argument("--hop", type=int, required=True, choices=[1, 2, 3],
                         help="Number of hops (1, 2, or 3)")
     parser.add_argument("--max-triplets", type=int, default=1000,
                         help="Maximum candidate triplets per question (default: 1000)")
     parser.add_argument("--embedding-model", type=str, default="all-MiniLM-L6-v2",
-                        help="Sentence-transformers model for embeddings (default: all-MiniLM-L6-v2)")
+                        help="Sentence-transformers model (default: all-MiniLM-L6-v2)")
+    parser.add_argument("--train-size", type=int, default=4000,
+                        help="Number of curated training samples (default: 4000)")
+    parser.add_argument("--val-size", type=int, default=500,
+                        help="Number of curated validation samples (default: 500)")
     args = parser.parse_args()
 
     preprocess_metaqa(
         kb_path=args.kb_path,
-        qa_path=args.qa_path,
+        qa_train_path=args.qa_train_path,
+        qa_dev_path=args.qa_dev_path,
+        qa_test_path=args.qa_test_path,
         output_dir=args.output_dir,
         hop=args.hop,
         max_triplets=args.max_triplets,
-        embedding_model_name=args.embedding_model
+        embedding_model_name=args.embedding_model,
+        train_size=args.train_size,
+        val_size=args.val_size,
     )

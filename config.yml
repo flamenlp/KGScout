@@ -15,6 +15,10 @@ datasets:
     train: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
     val: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
     test: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+  metaqa:
+    train: "data/metaqa/processed/metaqa-2hop-train.pt"
+    val: "data/metaqa/processed/metaqa-2hop-val.pt"
+    test: "data/metaqa/processed/metaqa-2hop-test.pt"
 
 # Result output directories
 results:
@@ -77,9 +81,15 @@ logs:
 # Generalization study (MetaQA) paths
 generalization:
   kb_path: "data/metaqa/kb.txt"
-  qa_1hop: "data/metaqa/1-hop/vanilla/qa_test.txt"
-  qa_2hop: "data/metaqa/2-hop/vanilla/qa_test.txt"
-  qa_3hop: "data/metaqa/3-hop/vanilla/qa_test.txt"
+  qa_train_1hop: "data/metaqa/1-hop/vanilla/qa_train.txt"
+  qa_train_2hop: "data/metaqa/2-hop/vanilla/qa_train.txt"
+  qa_train_3hop: "data/metaqa/3-hop/vanilla/qa_train.txt"
+  qa_dev_1hop: "data/metaqa/1-hop/vanilla/qa_dev.txt"
+  qa_dev_2hop: "data/metaqa/2-hop/vanilla/qa_dev.txt"
+  qa_dev_3hop: "data/metaqa/3-hop/vanilla/qa_dev.txt"
+  qa_test_1hop: "data/metaqa/1-hop/vanilla/qa_test.txt"
+  qa_test_2hop: "data/metaqa/2-hop/vanilla/qa_test.txt"
+  qa_test_3hop: "data/metaqa/3-hop/vanilla/qa_test.txt"
   processed_dir: "data/metaqa/processed"
-  model_path: "checkpoints/webqsp-k100/main/"
   embedding_model: "all-MiniLM-L6-v2"
+  default_hop: 2
