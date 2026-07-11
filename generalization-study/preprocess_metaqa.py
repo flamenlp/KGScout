@@ -60,6 +60,7 @@ import sys
 import re
 import argparse
 import random
+import logging
 import torch
 import numpy as np
 import networkx as nx
@@ -71,6 +72,41 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SEED = 42
+
+# =============================================================================
+# Logging Setup
+# =============================================================================
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logger = logging.getLogger("preprocess_metaqa")
+logger.setLevel(logging.DEBUG)
+logger.handlers.clear()
+
+_formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+_fh = logging.FileHandler(os.path.join(LOG_DIR, "preprocess_metaqa.log"), mode="a")
+_fh.setLevel(logging.DEBUG)
+_fh.setFormatter(_formatter)
+logger.addHandler(_fh)
+
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setLevel(logging.INFO)
+_sh.setFormatter(_formatter)
+logger.addHandler(_sh)
+
+# =============================================================================
+# Distribution Constraints (for curated sampling)
+# =============================================================================
+# Condition 1 (MUST): Minimum fraction of samples with path between q_entity and a_entity
+MIN_PATH_EXISTS_FRACTION = 0.85
+# Condition 2 (GOOD TO HAVE): Minimum fraction of samples with NO path between q_entity and a_entity
+MIN_NO_PATH_FRACTION = 0.10
+# Condition 3 (GOOD TO HAVE): Minimum fraction of samples where only a_entity is present (no path)
+MIN_A_ENTITY_ONLY_FRACTION = 0.005
 
 
 # =============================================================================
@@ -109,7 +145,7 @@ def load_kg(kb_path: str) -> Tuple[nx.DiGraph, Dict[str, List[Tuple[str, str, st
             entity_to_triplets[s.lower()].append(triplet)
             entity_to_triplets[o.lower()].append(triplet)
 
-    print(f"KG loaded: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+    logger.info(f"KG loaded: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
     return graph, entity_to_triplets
 
 
@@ -150,7 +186,7 @@ def load_qa_file(qa_path: str) -> List[Dict]:
                 "answer": answers,
             })
 
-    print(f"QA file loaded: {len(samples)} questions")
+    logger.info(f"QA file loaded: {len(samples)} questions")
     return samples
 
 
@@ -221,6 +257,35 @@ def extract_subgraph_triplets(
                 triplets.append(triplet)
 
     return triplets
+
+
+# =============================================================================
+# Relation/Triplet Text Processing (matches WebQSP/CWQ notebook format)
+# =============================================================================
+
+def process_relation(relation: str) -> str:
+    """
+    Process a relation string to match the format used in WebQSP/CWQ data prep.
+    Splits on dots and underscores, joins with spaces.
+
+    e.g., "directed_by" → "directed by"
+          "people.person.nationality" → "people person nationality"
+    """
+    relation_split = " ".join(relation.split("."))
+    relation_split2 = " ".join(relation_split.split("_"))
+    return relation_split2
+
+
+def linearize_triplet(triplet: Tuple[str, str, str]) -> str:
+    """
+    Linearize a triplet to a sentence string, matching the notebook format.
+    Format: "subject processed_relation object"
+
+    e.g., ("Kismet", "directed_by", "William Dieterle")
+        → "Kismet directed by William Dieterle"
+    """
+    s, r, o = triplet
+    return f"{s} {process_relation(r)} {o}"
 
 
 # =============================================================================
@@ -315,9 +380,9 @@ def get_question_type(question_raw: str) -> str:
 def curate_subset(
     classified_samples: List[Tuple[Dict, str, str]],
     target_size: int,
-    min_path_fraction: float = 0.75,
-    min_no_path_fraction: float = 0.10,
-    min_a_entity_only: int = 15,
+    min_path_fraction: float = MIN_PATH_EXISTS_FRACTION,
+    min_no_path_fraction: float = MIN_NO_PATH_FRACTION,
+    min_a_entity_only_fraction: float = MIN_A_ENTITY_ONLY_FRACTION,
 ) -> List[Dict]:
     """
     Sample a subset satisfying distribution constraints.
@@ -327,7 +392,7 @@ def curate_subset(
         target_size: Total samples to select
         min_path_fraction: Minimum fraction of "path_exists" samples (Condition 1)
         min_no_path_fraction: Minimum fraction of "no_path" samples (Condition 2)
-        min_a_entity_only: Minimum count of "a_entity_only" samples (Condition 3)
+        min_a_entity_only_fraction: Minimum fraction of "a_entity_only" samples (Condition 3)
 
     Returns:
         Curated list of processed entries
@@ -345,14 +410,15 @@ def curate_subset(
         elif category == "a_entity_only":
             a_entity_only_samples.append((entry, qtype))
 
-    print(f"\n  Category distribution (total available):")
-    print(f"    path_exists:   {len(path_exists_samples)}")
-    print(f"    no_path:       {len(no_path_samples)}")
-    print(f"    a_entity_only: {len(a_entity_only_samples)}")
+    logger.info(f"\n  Category distribution (total available):")
+    logger.info(f"    path_exists:   {len(path_exists_samples)}")
+    logger.info(f"    no_path:       {len(no_path_samples)}")
+    logger.info(f"    a_entity_only: {len(a_entity_only_samples)}")
 
     # Calculate targets
     min_path_count = int(target_size * min_path_fraction)
     min_no_path_count = int(target_size * min_no_path_fraction)
+    min_a_entity_only_count = max(1, int(target_size * min_a_entity_only_fraction))
 
     # Get all question types across all categories
     all_qtypes = set()
@@ -363,8 +429,8 @@ def curate_subset(
     for _, qtype in a_entity_only_samples:
         all_qtypes.add(qtype)
 
-    print(f"  Question types found: {len(all_qtypes)}")
-    print(f"  Targets: path≥{min_path_count}, no_path≥{min_no_path_count}, a_only≥{min_a_entity_only}")
+    logger.info(f"  Question types found: {len(all_qtypes)}")
+    logger.info(f"  Targets: path≥{min_path_count}, no_path≥{min_no_path_count}, a_only≥{min_a_entity_only_count}")
 
     # Step 1: Ensure all question types are represented
     # Take at least 1 sample per question type from path_exists (since it's the largest)
@@ -398,7 +464,7 @@ def curate_subset(
     random.shuffle(a_entity_only_samples)
     a_only_count = 0
     for i, (entry, qtype) in enumerate(a_entity_only_samples):
-        if a_only_count >= min_a_entity_only:
+        if a_only_count >= min_a_entity_only_count:
             break
         selected.append(("a_entity_only", entry))
         a_only_selected_indices.add(i)
@@ -444,14 +510,14 @@ def curate_subset(
     final_no_path_count = sum(1 for cat, _ in selected if cat == "no_path")
     final_a_only_count = sum(1 for cat, _ in selected if cat == "a_entity_only")
 
-    print(f"\n  Final distribution ({len(selected)} samples):")
-    print(f"    path_exists:   {final_path_count} ({100*final_path_count/len(selected):.1f}%)")
-    print(f"    no_path:       {final_no_path_count} ({100*final_no_path_count/len(selected):.1f}%)")
-    print(f"    a_entity_only: {final_a_only_count}")
+    logger.info(f"\n  Final distribution ({len(selected)} samples):")
+    logger.info(f"    path_exists:   {final_path_count} ({100*final_path_count/len(selected):.1f}%)")
+    logger.info(f"    no_path:       {final_no_path_count} ({100*final_no_path_count/len(selected):.1f}%)")
+    logger.info(f"    a_entity_only: {final_a_only_count}")
 
     if final_path_count / len(selected) < min_path_fraction:
-        print(f"  ⚠ WARNING: path_exists fraction ({final_path_count/len(selected):.2%}) "
-              f"is below target ({min_path_fraction:.0%})")
+        logger.warning(f"path_exists fraction ({final_path_count/len(selected):.2%}) "
+                       f"is below target ({min_path_fraction:.0%})")
 
     # Return just the entries
     result = [entry for _, entry in selected]
@@ -498,10 +564,9 @@ def process_samples(
         if len(all_triplets) == 0:
             continue
 
-        # Linearize ALL triplets: "subject relation object"
-        all_linearized = [
-            f"{s} {r.replace('_', ' ')} {o}" for s, r, o in all_triplets
-        ]
+        # Linearize ALL triplets matching notebook format:
+        # "subject processed_relation object" (dots→spaces, underscores→spaces)
+        all_linearized = [linearize_triplet(t) for t in all_triplets]
 
         # Compute question embedding
         question_embedding = embed_model.encode(
@@ -532,13 +597,15 @@ def process_samples(
         sorted_triplet_embeddings = all_triplet_embeddings[sorted_indices]
         sorted_scores = cosine_scores[sorted_indices]
 
-        # Compute relation embeddings only for the top-k triplets
-        relations = [r for _, r, _ in sorted_triplets]
-        sorted_relation_embeddings = compute_embeddings(relations, embed_model)
+        # Compute relation embeddings for top-k: embed the PROCESSED relation text
+        # (matches notebook: process_relation splits on dots and underscores)
+        processed_relations = [process_relation(r) for _, r, _ in sorted_triplets]
+        sorted_relation_embeddings = compute_embeddings(processed_relations, embed_model)
 
-        # Build topk_rel_data: List[(score, (s, r, o))]
+        # Build topk_rel_data matching notebook format:
+        # List[(processed_relation_string, (s, r, o))]
         topk_rel_data = [
-            (sorted_scores[i].item(), sorted_triplets[i])
+            (process_relation(sorted_triplets[i][1]), sorted_triplets[i])
             for i in range(len(sorted_triplets))
         ]
 
@@ -590,51 +657,51 @@ def preprocess_metaqa(
     random.seed(SEED)
     np.random.seed(SEED)
 
-    print(f"{'=' * 60}")
-    print(f"PREPROCESSING MetaQA {hop}-hop")
-    print(f"{'=' * 60}")
-    print(f"KB:         {kb_path}")
-    print(f"QA Train:   {qa_train_path}")
-    print(f"QA Dev:     {qa_dev_path}")
-    print(f"QA Test:    {qa_test_path}")
-    print(f"Output:     {output_dir}")
-    print(f"Max triplets: {max_triplets}")
-    print(f"Train size: {train_size}")
-    print(f"Val size:   {val_size}")
-    print(f"Embedding:  {embedding_model_name}")
-    print(f"{'=' * 60}")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"PREPROCESSING MetaQA {hop}-hop")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"KB:         {kb_path}")
+    logger.info(f"QA Train:   {qa_train_path}")
+    logger.info(f"QA Dev:     {qa_dev_path}")
+    logger.info(f"QA Test:    {qa_test_path}")
+    logger.info(f"Output:     {output_dir}")
+    logger.info(f"Max triplets: {max_triplets}")
+    logger.info(f"Train size: {train_size}")
+    logger.info(f"Val size:   {val_size}")
+    logger.info(f"Embedding:  {embedding_model_name}")
+    logger.info(f"{'=' * 60}")
 
     # Load embedding model
-    print("\nLoading embedding model...")
+    logger.info("\nLoading embedding model...")
     embed_model = SentenceTransformer(embedding_model_name)
 
     # Load KG
-    print("\nLoading knowledge graph...")
+    logger.info("\nLoading knowledge graph...")
     graph, entity_to_triplets = load_kg(kb_path)
 
     # =========================================================================
     # Process TRAINING set (curated subset)
     # =========================================================================
-    print(f"\n{'=' * 60}")
-    print(f"PHASE 1: Processing TRAINING set (curating {train_size} from full train)")
-    print(f"{'=' * 60}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"PHASE 1: Processing TRAINING set (curating {train_size} from full train)")
+    logger.info(f"{'=' * 60}")
 
     train_samples = load_qa_file(qa_train_path)
-    print(f"Processing all {len(train_samples)} training samples for classification...")
+    logger.info(f"Processing all {len(train_samples)} training samples for classification...")
 
     train_classified = process_samples(
         train_samples, graph, entity_to_triplets, embed_model,
         hop, top_k_triplets=max_triplets, desc=f"Train {hop}-hop"
     )
 
-    print(f"\nClassified {len(train_classified)} samples. Curating {train_size} subset...")
+    logger.info(f"\nClassified {len(train_classified)} samples. Curating {train_size} subset...")
     train_curated = curate_subset(train_classified, train_size)
 
     # Save training data
     os.makedirs(output_dir, exist_ok=True)
     train_output = os.path.join(output_dir, f"metaqa-{hop}hop-train.pt")
     torch.save(train_curated, train_output)
-    print(f"\n✓ Training data saved: {train_output} ({len(train_curated)} samples)")
+    logger.info(f"\n✓ Training data saved: {train_output} ({len(train_curated)} samples)")
 
     # Free memory
     del train_classified, train_samples, train_curated
@@ -644,25 +711,25 @@ def preprocess_metaqa(
     # =========================================================================
     # Process VALIDATION set (curated subset)
     # =========================================================================
-    print(f"\n{'=' * 60}")
-    print(f"PHASE 2: Processing VALIDATION set (curating {val_size} from dev)")
-    print(f"{'=' * 60}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"PHASE 2: Processing VALIDATION set (curating {val_size} from dev)")
+    logger.info(f"{'=' * 60}")
 
     dev_samples = load_qa_file(qa_dev_path)
-    print(f"Processing all {len(dev_samples)} dev samples for classification...")
+    logger.info(f"Processing all {len(dev_samples)} dev samples for classification...")
 
     dev_classified = process_samples(
         dev_samples, graph, entity_to_triplets, embed_model,
         hop, top_k_triplets=max_triplets, desc=f"Val {hop}-hop"
     )
 
-    print(f"\nClassified {len(dev_classified)} samples. Curating {val_size} subset...")
+    logger.info(f"\nClassified {len(dev_classified)} samples. Curating {val_size} subset...")
     val_curated = curate_subset(dev_classified, val_size)
 
     # Save validation data
     val_output = os.path.join(output_dir, f"metaqa-{hop}hop-val.pt")
     torch.save(val_curated, val_output)
-    print(f"\n✓ Validation data saved: {val_output} ({len(val_curated)} samples)")
+    logger.info(f"\n✓ Validation data saved: {val_output} ({len(val_curated)} samples)")
 
     # Free memory
     del dev_classified, dev_samples, val_curated
@@ -671,12 +738,12 @@ def preprocess_metaqa(
     # =========================================================================
     # Process TEST set (full, no subsampling)
     # =========================================================================
-    print(f"\n{'=' * 60}")
-    print(f"PHASE 3: Processing TEST set (full)")
-    print(f"{'=' * 60}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"PHASE 3: Processing TEST set (full)")
+    logger.info(f"{'=' * 60}")
 
     test_samples = load_qa_file(qa_test_path)
-    print(f"Processing all {len(test_samples)} test samples...")
+    logger.info(f"Processing all {len(test_samples)} test samples...")
 
     test_classified = process_samples(
         test_samples, graph, entity_to_triplets, embed_model,
@@ -689,7 +756,7 @@ def preprocess_metaqa(
     # Save test data
     test_output = os.path.join(output_dir, f"metaqa-{hop}hop-test.pt")
     torch.save(test_data, test_output)
-    print(f"\n✓ Test data saved: {test_output} ({len(test_data)} samples)")
+    logger.info(f"\n✓ Test data saved: {test_output} ({len(test_data)} samples)")
 
     # Free memory
     del test_classified, test_samples, test_data
@@ -701,13 +768,13 @@ def preprocess_metaqa(
     # =========================================================================
     # Summary
     # =========================================================================
-    print(f"\n{'=' * 60}")
-    print(f"PREPROCESSING COMPLETE - MetaQA {hop}-hop")
-    print(f"{'=' * 60}")
-    print(f"  Train: {train_output}")
-    print(f"  Val:   {val_output}")
-    print(f"  Test:  {test_output}")
-    print(f"{'=' * 60}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"PREPROCESSING COMPLETE - MetaQA {hop}-hop")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"  Train: {train_output}")
+    logger.info(f"  Val:   {val_output}")
+    logger.info(f"  Test:  {test_output}")
+    logger.info(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
