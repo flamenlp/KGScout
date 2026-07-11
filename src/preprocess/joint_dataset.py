@@ -74,6 +74,23 @@ class JointTrainingDatasetv3PPR(Dataset):
                 if missing_fields:
                     raise KeyError(f"Missing required fields: {missing_fields}")
                 
+                # If graph_features already precomputed, skip PPR computation
+                if "graph_features" in entry and entry["graph_features"] is not None:
+                    self.precomputed_data.append({
+                        "question": entry["question"],
+                        "is_empty": entry["is_empty"],
+                        "q_entity": entry["q_entity"],
+                        "a_entity": entry["a_entity"],
+                        "answer": entry["answer"],
+                        "question_embedding": entry["question_embedding"],
+                        "topk_linearized_triplets": entry["topk_linearized_triplets"],
+                        "topk_linearized_triplet_embeddings": entry["topk_linearized_triplet_embeddings"],
+                        "topk_rel_data": entry["topk_rel_data"],
+                        "topK_rel_embeddings": entry["topK_rel_embeddings"],
+                        "graph_features": entry["graph_features"].to(self.device)
+                    })
+                    continue
+                
                 # Normalize question entities to lowercase
                 q_entity = [e.lower() for e in entry["q_entity"]]
                 triplets = [t[1] for t in entry["topk_rel_data"]]
