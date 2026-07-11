@@ -55,10 +55,17 @@ REACHABLE_1500_ONLY_RATIO = 0.15
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(LOG_DIR, "cwq_data_prep.log"), mode="w"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
