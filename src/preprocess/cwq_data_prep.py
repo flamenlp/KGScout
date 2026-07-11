@@ -336,7 +336,7 @@ def phase4_stratified_sampling(
     total_has_path = int(TOTAL_SAMPLES * HAS_PATH_RATIO)  # 2550
     total_no_path = TOTAL_SAMPLES - total_has_path          # 450
 
-    # Targets per hop
+    # Targets per hop (initial)
     hop_targets = {
         "1hop": int(total_has_path * HOP_DISTRIBUTION["1hop"]),      # 1020
         "2hop": int(total_has_path * HOP_DISTRIBUTION["2hop"]),      # 893
@@ -344,16 +344,46 @@ def phase4_stratified_sampling(
     }
     flexible_count = total_has_path - sum(hop_targets.values())  # 127
 
-    logger.info(f"Targets: 1hop={hop_targets['1hop']}, 2hop={hop_targets['2hop']}, "
+    # Redistribute quota from undersized pools to the next lower hop
+    # Order: 3hop_plus → 2hop → 1hop
+    hop_order = ["3hop_plus", "2hop", "1hop"]
+    fallback_map = {"3hop_plus": "2hop", "2hop": "1hop", "1hop": None}
+
+    for hop_key in hop_order:
+        pool_size = len(pools[hop_key])
+        target = hop_targets[hop_key]
+        if pool_size < target:
+            shortfall = target - pool_size
+            hop_targets[hop_key] = pool_size  # take what's available
+            fallback = fallback_map[hop_key]
+            if fallback:
+                hop_targets[fallback] += shortfall
+                logger.warning(f"  {hop_key} pool has only {pool_size} samples "
+                               f"(need {target}). Redistributing {shortfall} to {fallback}.")
+            else:
+                # 1hop has no lower fallback, add to flexible
+                flexible_count += shortfall
+                logger.warning(f"  {hop_key} pool has only {pool_size} samples "
+                               f"(need {target}). Adding {shortfall} to flexible.")
+
+    logger.info(f"Final targets after redistribution: "
+                f"1hop={hop_targets['1hop']}, 2hop={hop_targets['2hop']}, "
                 f"3hop+={hop_targets['3hop_plus']}, flexible={flexible_count}, "
                 f"no_path={total_no_path}")
 
     selected_samples = []
     no_path_candidates = []
+    leftover_A = []  # leftover category A samples for flexible fill
+    leftover_B = []  # leftover category B samples for flexible fill
 
     for hop_key in ["1hop", "2hop", "3hop_plus"]:
         pool = pools[hop_key]
         target = hop_targets[hop_key]
+
+        if target == 0:
+            logger.info(f"\nSkipping {hop_key} (target=0 after redistribution)")
+            continue
+
         target_A = int(target * REACHABLE_1000_RATIO)   # 85%
         target_B = target - target_A                     # 15%
 
@@ -376,18 +406,16 @@ def phase4_stratified_sampling(
         random.shuffle(cat_B)
         sampled_B = cat_B[:target_B]
 
-        # Handle shortfalls
+        # Handle shortfalls within A/B
         shortfall_A = target_A - len(sampled_A)
         shortfall_B = target_B - len(sampled_B)
 
         if shortfall_A > 0 and len(cat_B) > target_B:
-            # Borrow from B
             extra_from_B = cat_B[target_B:target_B + shortfall_A]
             sampled_B.extend(extra_from_B)
             logger.warning(f"  Shortfall in A ({shortfall_A}), borrowed from B")
 
         if shortfall_B > 0 and len(cat_A) > target_A:
-            # Borrow from A
             extra_from_A = cat_A[target_A:target_A + shortfall_B]
             sampled_A.extend(extra_from_A)
             logger.warning(f"  Shortfall in B ({shortfall_B}), borrowed from A")
@@ -402,17 +430,29 @@ def phase4_stratified_sampling(
         selected_samples.extend(sampled_A)
         selected_samples.extend(sampled_B)
 
+        # Track leftovers for flexible fill
+        used_A = len(sampled_A)
+        used_B = len(sampled_B)
+        leftover_A.extend(cat_A[used_A:])
+        leftover_B.extend(cat_B[used_B:])
+
         # Collect no-path candidates
         no_path_candidates.extend(cat_C)
 
-    # Flexible overflow: fill from any remaining A/B across hops
+    # Flexible overflow: fill from leftover A/B samples
     current_count = len(selected_samples)
     needed_flexible = total_has_path - current_count
     if needed_flexible > 0:
-        logger.info(f"\nFilling {needed_flexible} flexible slots...")
-        # Re-encode remaining samples from all pools that weren't selected
-        # For simplicity, we'll just take more from the largest available pool
-        # This is handled implicitly if pools are large enough
+        logger.info(f"\nFilling {needed_flexible} flexible slots from leftovers...")
+        random.shuffle(leftover_A)
+        random.shuffle(leftover_B)
+        flexible_pool = leftover_A + leftover_B
+        flexible_selected = flexible_pool[:needed_flexible]
+        for s in flexible_selected:
+            s["category"] = "has_path"
+            s["reachability"] = s.get("reachability", "top_1000")
+        selected_samples.extend(flexible_selected)
+        logger.info(f"  Filled {len(flexible_selected)} flexible slots")
 
     # No-path group
     logger.info(f"\nSelecting {total_no_path} no-path samples from {len(no_path_candidates)} candidates...")
