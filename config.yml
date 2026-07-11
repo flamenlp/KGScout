@@ -8,17 +8,17 @@
 # Dataset paths (absolute paths to preprocessed .pt files)
 datasets:
   cwq:
-    train: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
-    val: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
-    test: "/mnt/LS226/LS25/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
-  webqsp:
-    train: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
-    val: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
-    test: "/mnt/LS226/LS25/sourav23099/webqsp/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+    train: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
   metaqa:
     train: "data/metaqa/processed/metaqa-2hop-train.pt"
     val: "data/metaqa/processed/metaqa-2hop-val.pt"
     test: "data/metaqa/processed/metaqa-2hop-test.pt"
+  webqsp:
+    train: "/mnt/hdd1/sourav23099/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val:  "/mnt/hdd1/sourav23099/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/hdd1/sourav23099/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
 
 # Result output directories
 results:
@@ -26,8 +26,8 @@ results:
 
   # Ablation-2: Reversed attention architecture & reward ablations
   ablation2:
-    model_ablation: "./results/ablation-2/model-ablation"
-    reward_ablation: "./results/ablation-2/reward-ablation"
+    model_ablation: "./results/ablation-2/cwq-model-ablation"
+    reward_ablation: "./results/ablation-2/cwq-reward-ablation"
 
   # K-value ablation study
   k_ablation: "./results/k-ablation"
@@ -45,7 +45,7 @@ results:
 experiments:
   # K-ablation: values of k to sweep
   k_ablation:
-    k_values: [30, 50, 100, 150]
+    k_values: [30, 50, 150]
 
   # Model ablation variant names
   model_variants: ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
