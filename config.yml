@@ -12,9 +12,9 @@ datasets:
     val: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
     test: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
   metaqa:
-    train: "data/metaqa/processed/metaqa-2hop-train.pt"
-    val: "data/metaqa/processed/metaqa-2hop-val.pt"
-    test: "data/metaqa/processed/metaqa-2hop-test.pt"
+    train: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-train.pt"
+    val: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-val.pt"
+    test: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-test.pt"
   webqsp:
     train: "/mnt/hdd1/sourav23099/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
     val:  "/mnt/hdd1/sourav23099/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
@@ -90,6 +90,6 @@ generalization:
   qa_test_1hop: "data/metaqa/1-hop/vanilla/qa_test.txt"
   qa_test_2hop: "data/metaqa/2-hop/vanilla/qa_test.txt"
   qa_test_3hop: "data/metaqa/3-hop/vanilla/qa_test.txt"
-  processed_dir: "data/metaqa/processed"
+  processed_dir: "/mnt/hdd1/sourav23099/metaqa/processed"
   embedding_model: "all-MiniLM-L6-v2"
   default_hop: 2
