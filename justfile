@@ -476,17 +476,21 @@ full-pipeline dataset topk="" samplek="":
 # ============================================================================
 # ABLATION-2: Model Architecture + Reward Function Ablation Studies
 # ============================================================================
-# Reversed attention ablations: 6 model variants + 6 reward variants.
+# Reversed attention ablations: 6 model variants + 2 reward variants.
 # Pipeline per variant: Train → Triplet Selection → Coverage → vLLM Inference
 #
-# Usage: just ablation-2 cwq
-#        just ablation-2 webqsp
+# Training uses the same Pretrainer and Trainer from src/ (same as full-pipeline).
+# Triplet selection is deterministic top-k (no sampling at inference).
+# Hyperparameters match full-pipeline (gradient_accumulation_steps=32, etc.)
+#
+# Usage: just run-ablations cwq
+#        just run-ablations webqsp
 
 run-ablations dataset:
     #!/usr/bin/env bash
 
-    # --- Read paths from config.yml ---
-    YAML_OUTPUT=$(python3 scripts/read_config.py "{{dataset}}")
+    # --- Read ablation config ---
+    YAML_OUTPUT=$(python3 scripts/read_ablation_config.py "{{dataset}}")
 
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to read config.yml for dataset '{{dataset}}'"
@@ -496,39 +500,41 @@ run-ablations dataset:
     TRAIN=$(echo "$YAML_OUTPUT" | sed -n '1p')
     VAL=$(echo "$YAML_OUTPUT" | sed -n '2p')
     TEST=$(echo "$YAML_OUTPUT" | sed -n '3p')
-    DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '6p')
-    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
-
-    # Variant lists (from config.yml experiments section)
-    MODEL_VARIANTS="no-ppr no-rt no-tt no-gate no-ra no-ta"
-    REWARD_VARIANTS="no_pres no_conn no_path only_pres only_conn only_cov"
-
-    # Base output directories
-    MODEL_BASE="./results/ablation-2/{{dataset}}-model-ablation"
-    REWARD_BASE="./results/ablation-2/{{dataset}}-reward-ablation"
+    DEFAULT_TOPK=$(echo "$YAML_OUTPUT" | sed -n '4p')
+    LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '5p')
+    MODEL_VARIANTS=$(echo "$YAML_OUTPUT" | sed -n '6p')
+    REWARD_VARIANTS=$(echo "$YAML_OUTPUT" | sed -n '7p')
+    MODEL_BASE=$(echo "$YAML_OUTPUT" | sed -n '8p')
+    REWARD_BASE=$(echo "$YAML_OUTPUT" | sed -n '9p')
+    NUM_EPOCHS=$(echo "$YAML_OUTPUT" | sed -n '10p')
+    PATIENCE=$(echo "$YAML_OUTPUT" | sed -n '11p')
 
     LOG="logs/ablation-2.log"
     mkdir -p logs
 
     echo "============================================================" | tee -a "$LOG"
-    echo "ABLATION: {{dataset}}"                                      | tee -a "$LOG"
+    echo "ABLATION: {{dataset}}"                                        | tee -a "$LOG"
     echo "  Model variants:  $MODEL_VARIANTS"                           | tee -a "$LOG"
     echo "  Reward variants: $REWARD_VARIANTS"                          | tee -a "$LOG"
     echo "  Train: $TRAIN"                                              | tee -a "$LOG"
     echo "  Val:   $VAL"                                                | tee -a "$LOG"
     echo "  Test:  $TEST"                                               | tee -a "$LOG"
     echo "  LLM:   $LLM_MODEL"                                         | tee -a "$LOG"
+    echo "  Top-k: $DEFAULT_TOPK"                                       | tee -a "$LOG"
+    echo "  Epochs: $NUM_EPOCHS, Patience: $PATIENCE"                   | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
     # ================================================================
-    # PHASE 1: Model Ablation — Train + Triplet Generation
+    # PHASE 1: Model Ablation — Train + Triplet Selection
     # ================================================================
     echo "" | tee -a "$LOG"
-    echo ">>> PHASE 1: Model Ablation — Train + Triplet Generation" | tee -a "$LOG"
+    echo ">>> PHASE 1: Model Ablation — Train + Triplet Selection" | tee -a "$LOG"
 
     for V in $MODEL_VARIANTS; do
-        TRAIN_DIR="$MODEL_BASE/$V/model/trained"
-        TRIPLET_FILE="$MODEL_BASE/$V/triplet-result/selected_triplets.json"
+        CKPT_DIR="$MODEL_BASE/$V/model"
+        TRAIN_DIR="$CKPT_DIR/main_training_k${DEFAULT_TOPK}"
+        TRIPLET_DIR="$MODEL_BASE/$V/triplet-result"
+        TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
 
         echo "" | tee -a "$LOG"
         echo "  [$V] -------------------------------------------" | tee -a "$LOG"
@@ -538,43 +544,55 @@ run-ablations dataset:
             continue
         fi
 
-        # Check if checkpoint exists (skip training if so)
+        # Check if checkpoint exists
         CKPT=""
         if [ -d "$TRAIN_DIR" ]; then
             CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
         fi
 
         if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
-            echo "  [$V] Checkpoint found. Skipping training, running inference only..." | tee -a "$LOG"
-            python -m ablation-2.model_ablation \
-                --train_data "$TRAIN" \
-                --val_data "$VAL" \
-                --test_data "$TEST" \
-                --output_dir "$MODEL_BASE" \
-                --experiments $V \
-                --skip_train \
-                2>&1 | tee -a "$LOG"
+            echo "  [$V] Checkpoint found at $CKPT. Skipping training." | tee -a "$LOG"
         else
-            echo "  [$V] Training + inference..." | tee -a "$LOG"
-            python -m ablation-2.model_ablation \
-                --train_data "$TRAIN" \
-                --val_data "$VAL" \
-                --test_data "$TEST" \
-                --output_dir "$MODEL_BASE" \
-                --experiments $V \
+            echo "  [$V] Training with model-class=$V..." | tee -a "$LOG"
+            python cli.py train \
+                --train-data "$TRAIN" \
+                --val-data "$VAL" \
+                --checkpoint-dir "$CKPT_DIR" \
+                --k $DEFAULT_TOPK \
+                --num-epochs $NUM_EPOCHS \
+                --early-stopping-patience $PATIENCE \
+                --model-class $V \
                 2>&1 | tee -a "$LOG"
+            # Find checkpoint after training
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
         fi
+
+        if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+            echo "  [$V] ERROR: No checkpoint found after training. Skipping inference." | tee -a "$LOG"
+            continue
+        fi
+
+        echo "  [$V] Generating triplets (deterministic top-k=$DEFAULT_TOPK)..." | tee -a "$LOG"
+        python -m src.utils.triplet_selector \
+            --model-path "$CKPT" \
+            --test-data "$TEST" \
+            --output-dir "$TRIPLET_DIR" \
+            --top-k $DEFAULT_TOPK \
+            --model-class $V \
+            2>&1 | tee -a "$LOG"
     done
 
     # ================================================================
-    # PHASE 2: Reward Ablation — Train + Triplet Generation
+    # PHASE 2: Reward Ablation — Train + Triplet Selection
     # ================================================================
     echo "" | tee -a "$LOG"
-    echo ">>> PHASE 2: Reward Ablation — Train + Triplet Generation" | tee -a "$LOG"
+    echo ">>> PHASE 2: Reward Ablation — Train + Triplet Selection" | tee -a "$LOG"
 
     for V in $REWARD_VARIANTS; do
-        TRAIN_DIR="$REWARD_BASE/$V/model/trained"
-        TRIPLET_FILE="$REWARD_BASE/$V/triplet-result/selected_triplets.json"
+        CKPT_DIR="$REWARD_BASE/$V/model"
+        TRAIN_DIR="$CKPT_DIR/main_training_k${DEFAULT_TOPK}"
+        TRIPLET_DIR="$REWARD_BASE/$V/triplet-result"
+        TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
 
         echo "" | tee -a "$LOG"
         echo "  [$V] -------------------------------------------" | tee -a "$LOG"
@@ -584,32 +602,42 @@ run-ablations dataset:
             continue
         fi
 
-        # Check if checkpoint exists (skip training if so)
+        # Check if checkpoint exists
         CKPT=""
         if [ -d "$TRAIN_DIR" ]; then
             CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
         fi
 
         if [ -n "$CKPT" ] && [ -f "$CKPT" ]; then
-            echo "  [$V] Checkpoint found. Skipping training, running inference only..." | tee -a "$LOG"
-            python -m ablation-2.reward_ablation \
-                --train_data "$TRAIN" \
-                --val_data "$VAL" \
-                --test_data "$TEST" \
-                --output_dir "$REWARD_BASE" \
-                --experiments $V \
-                --skip_train \
-                2>&1 | tee -a "$LOG"
+            echo "  [$V] Checkpoint found at $CKPT. Skipping training." | tee -a "$LOG"
         else
-            echo "  [$V] Training + inference..." | tee -a "$LOG"
-            python -m ablation-2.reward_ablation \
-                --train_data "$TRAIN" \
-                --val_data "$VAL" \
-                --test_data "$TEST" \
-                --output_dir "$REWARD_BASE" \
-                --experiments $V \
+            echo "  [$V] Training with reward-function=$V..." | tee -a "$LOG"
+            python cli.py train \
+                --train-data "$TRAIN" \
+                --val-data "$VAL" \
+                --checkpoint-dir "$CKPT_DIR" \
+                --k $DEFAULT_TOPK \
+                --num-epochs $NUM_EPOCHS \
+                --early-stopping-patience $PATIENCE \
+                --reward-function $V \
                 2>&1 | tee -a "$LOG"
+            # Find checkpoint after training
+            CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
         fi
+
+        if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+            echo "  [$V] ERROR: No checkpoint found after training. Skipping inference." | tee -a "$LOG"
+            continue
+        fi
+
+        # Reward ablation uses default PathRankingModel (no --model-class)
+        echo "  [$V] Generating triplets (deterministic top-k=$DEFAULT_TOPK)..." | tee -a "$LOG"
+        python -m src.utils.triplet_selector \
+            --model-path "$CKPT" \
+            --test-data "$TEST" \
+            --output-dir "$TRIPLET_DIR" \
+            --top-k $DEFAULT_TOPK \
+            2>&1 | tee -a "$LOG"
     done
 
     # ================================================================
@@ -653,7 +681,7 @@ run-ablations dataset:
     done
 
     # ================================================================
-    # PHASE 4: vLLM Inference (all variants, per-variant skip)
+    # PHASE 4: vLLM Inference (all variants)
     # ================================================================
     echo "" | tee -a "$LOG"
     echo ">>> PHASE 4: vLLM Inference" | tee -a "$LOG"
@@ -703,11 +731,11 @@ run-ablations dataset:
     # ---- Summary ----
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "ABLATION COMPLETE: {{dataset}}"                             | tee -a "$LOG"
+    echo "ABLATION COMPLETE: {{dataset}}"                               | tee -a "$LOG"
     echo "  Model ablation: $MODEL_BASE/"                               | tee -a "$LOG"
     echo "  Reward ablation: $REWARD_BASE/"                             | tee -a "$LOG"
     echo "  Per variant:"                                               | tee -a "$LOG"
-    echo "    model/trained/     - checkpoints"                         | tee -a "$LOG"
+    echo "    model/             - trained checkpoint"                   | tee -a "$LOG"
     echo "    triplet-result/    - selected_triplets.json"              | tee -a "$LOG"
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
     echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"

@@ -41,6 +41,7 @@ class Trainer:
         device: str = "cuda",
         gradient_accumulation_steps: int = 32,
         max_grad_norm: float = 1.0,
+        reward_function=None,
     ):
         """
         Args:
@@ -49,12 +50,15 @@ class Trainer:
             device: Device ('cuda' or 'cpu')
             gradient_accumulation_steps: Gradient accumulation steps (default 32)
             max_grad_norm: Max gradient norm for clipping (default 1.0)
+            reward_function: Callable (triplets, q_entities, a_entities) -> float.
+                             Defaults to compute_reward_v8 if None.
         """
         self.path_ranker = path_ranker.to(device)
         self.device = device
         self.checkpoint_dir = checkpoint_dir
         self.accum = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
+        self.reward_func = reward_function if reward_function is not None else compute_reward_v8
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         # Running baseline state
@@ -123,7 +127,7 @@ class Trainer:
         )
 
         # Compute reward
-        rew = compute_reward_v8(sel_triplets, q_ent, a_ent)
+        rew = self.reward_func(sel_triplets, q_ent, a_ent)
         if rew is None:
             return None, None
 

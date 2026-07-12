@@ -182,6 +182,8 @@ def run_train_command(args):
         args: Parsed command-line arguments
     """
     from src.services.train_service import TrainService
+    from src.model import get_model_class
+    from src.training.rewards import get_reward_function
     
     # Validate input files exist
     validate_file_exists(args.train_data, "Training data file")
@@ -193,6 +195,10 @@ def run_train_command(args):
     # Validate training arguments for conflicts
     validate_train_arguments(args)
     
+    # Resolve model class and reward function
+    model_class = get_model_class(args.model_class)
+    reward_function = get_reward_function(args.reward_function)
+    
     print("=" * 60)
     print("TRAINING PIPELINE")
     print("=" * 60)
@@ -202,6 +208,10 @@ def run_train_command(args):
     print(f"Main training k parameter: {args.k}")
     print(f"Main training epochs: {args.num_epochs}")
     print(f"Learning rate: {args.learning_rate}")
+    if args.model_class:
+        print(f"Model class: {args.model_class} ({model_class.__name__})")
+    if args.reward_function:
+        print(f"Reward function: {args.reward_function}")
     print("=" * 60)
     
     # Create service and run training
@@ -218,7 +228,9 @@ def run_train_command(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         validation_interval=args.validation_interval,
         early_stopping_patience=args.early_stopping_patience,
-        sample_k=args.sample_k
+        sample_k=args.sample_k,
+        model_class=model_class,
+        reward_function=reward_function,
     )
     
     # Print summary
@@ -732,8 +744,8 @@ Examples:
     train_parser.add_argument(
         '--num-epochs',
         type=int,
-        default=50,
-        help='Number of epochs for main training phase (default: 50)'
+        default=30,
+        help='Number of epochs for main training phase (default: 30)'
     )
     train_parser.add_argument(
         '--learning-rate',
@@ -776,6 +788,20 @@ Examples:
         type=int,
         default=1000,
         help='Pool size N: number of prefiltered triplets per question (default: 1000)'
+    )
+    train_parser.add_argument(
+        '--model-class',
+        type=str,
+        default=None,
+        choices=['no-ppr', 'no-rt', 'no-tt', 'no-gate', 'no-ra', 'no-ta'],
+        help='Model architecture variant for ablation (default: PathRankingModel)'
+    )
+    train_parser.add_argument(
+        '--reward-function',
+        type=str,
+        default=None,
+        choices=['only_presence', 'only_connection'],
+        help='Reward function variant for ablation (default: compute_reward_v8)'
     )
     
     # ========================================================================

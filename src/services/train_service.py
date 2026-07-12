@@ -13,11 +13,13 @@ from torch.utils.data import DataLoader
 from typing import Dict, Any, Optional
 
 from src.model.path_ranker import PathRankingModel
+from src.model import get_model_class
 from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
 from src.preprocess.pretrain_dataset import CosinePretrainingDataset
 from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.training.pretrainer import Pretrainer
 from src.training.trainer import Trainer
+from src.training.rewards import get_reward_function
 
 # Match ablation-2 seed for reproducibility
 SEED = 100
@@ -112,7 +114,8 @@ class TrainService:
         learning_rate: float,
         weight_decay: float,
         gradient_accumulation_steps: int,
-        validation_interval: int
+        validation_interval: int,
+        model_class=None,
     ) -> str:
         """
         Run pretraining phase.
@@ -125,6 +128,7 @@ class TrainService:
             weight_decay: Weight decay
             gradient_accumulation_steps: Gradient accumulation steps
             validation_interval: Validation interval
+            model_class: Model class to instantiate. Defaults to PathRankingModel.
         
         Returns:
             Path to best pretrained model checkpoint
@@ -153,9 +157,10 @@ class TrainService:
             collate_fn=collate_fn
         )
         
-        # Initialize model
-        print("\nInitializing PathRankingModel...")
-        path_ranker = PathRankingModel(hidden_size=384, device=self.device)
+        # Initialize model (use provided class or default PathRankingModel)
+        ModelClass = model_class if model_class is not None else PathRankingModel
+        print(f"\nInitializing {ModelClass.__name__}...")
+        path_ranker = ModelClass(hidden_size=384, device=self.device)
         path_ranker.to(self.device)
         
         # Create checkpoint directory
@@ -191,15 +196,16 @@ class TrainService:
         
         return pretrained_model_path
     
-    def load_pretrained_model(self, checkpoint_path: str) -> PathRankingModel:
+    def load_pretrained_model(self, checkpoint_path: str, model_class=None) -> "PathRankingModel":
         """
         Load pretrained model from checkpoint.
         
         Args:
             checkpoint_path: Path to pretrained checkpoint
+            model_class: Model class to instantiate. Defaults to PathRankingModel.
         
         Returns:
-            PathRankingModel with pretrained weights
+            Model with pretrained weights
         """
         print("\n" + "=" * 60)
         print("PHASE 2: LOADING PRETRAINED MODEL")
@@ -231,7 +237,8 @@ class TrainService:
             )
         
         # Create model and load weights
-        path_ranker = PathRankingModel(hidden_size=384, device=self.device)
+        ModelClass = model_class if model_class is not None else PathRankingModel
+        path_ranker = ModelClass(hidden_size=384, device=self.device)
         
         try:
             path_ranker.load_state_dict(checkpoint["model_state_dict"])
@@ -261,13 +268,14 @@ class TrainService:
         gradient_accumulation_steps: int,
         validation_interval: int,
         early_stopping_patience: int,
-        sample_k: int = 1000
+        sample_k: int = 1000,
+        reward_function=None,
     ) -> Dict[str, str]:
         """
         Run main training phase.
         
         Args:
-            path_ranker: PathRankingModel with pretrained weights
+            path_ranker: Model with pretrained weights
             train_base_dataset: Base training dataset
             val_base_dataset: Base validation dataset
             checkpoint_dir: Directory to save checkpoints
@@ -282,6 +290,8 @@ class TrainService:
             sample_k: Number of triplets to prefilter per question (pool size).
                       The model sees sample_k triplets and selects the top-k from them.
                       Default: 1000 (consistent with all ablation studies).
+            reward_function: Callable (triplets, q_entities, a_entities) -> float.
+                            Defaults to compute_reward_v8 if None.
         
         Returns:
             Dictionary with paths to checkpoints and logs
@@ -290,6 +300,8 @@ class TrainService:
         print("PHASE 3: MAIN TRAINING")
         print("=" * 60)
         print(f"Configuration: N={sample_k} (pool), k={k} (selection), {num_epochs} epochs")
+        if reward_function is not None:
+            print(f"Reward function: {reward_function.__name__}")
         
         # Create main training datasets
         # sample_k controls the prefiltered pool size (N=1000 by default)
@@ -319,6 +331,7 @@ class TrainService:
             checkpoint_dir=main_checkpoint_dir,
             device=self.device,
             gradient_accumulation_steps=gradient_accumulation_steps,
+            reward_function=reward_function,
         )
         
         # Run training
@@ -347,14 +360,16 @@ class TrainService:
         val_data_path: str,
         checkpoint_dir: str,
         k: int,
-        num_epochs: int = 50,
+        num_epochs: int = 30,
         learning_rate: float = 1e-4,
         warmup_steps: int = 100,
         weight_decay: float = 1e-5,
         gradient_accumulation_steps: int = 8,
         validation_interval: int = 1,
         early_stopping_patience: int = 10,
-        sample_k: int = 1000
+        sample_k: int = 1000,
+        model_class=None,
+        reward_function=None,
     ) -> Dict[str, Any]:
         """
         Execute complete training pipeline.
@@ -374,6 +389,9 @@ class TrainService:
             sample_k: Pool size (N) — number of prefiltered triplets per question.
                       The model sees sample_k triplets and selects top-k from them.
                       Default: 1000 (consistent with all ablation studies).
+            model_class: Model class to instantiate. Defaults to PathRankingModel if None.
+            reward_function: Callable (triplets, q_entities, a_entities) -> float.
+                            Defaults to compute_reward_v8 if None.
         
         Returns:
             Dictionary with training results and paths
@@ -400,11 +418,12 @@ class TrainService:
             learning_rate,
             weight_decay,
             8,  # pretraining always uses accum=8 (matches ablation-2)
-            validation_interval
+            validation_interval,
+            model_class=model_class,
         )
         
         # Load pretrained model
-        path_ranker = self.load_pretrained_model(pretrained_model_path)
+        path_ranker = self.load_pretrained_model(pretrained_model_path, model_class=model_class)
         
         # Run main training
         training_results = self.run_main_training(
@@ -420,7 +439,8 @@ class TrainService:
             gradient_accumulation_steps,
             validation_interval,
             early_stopping_patience,
-            sample_k
+            sample_k,
+            reward_function=reward_function,
         )
         
         return {

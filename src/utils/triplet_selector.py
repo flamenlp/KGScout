@@ -316,6 +316,7 @@ if __name__ == "__main__":
     from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
     from src.preprocess.sampled_dataset import SampledJointTrainingDataset
     from src.model.path_ranker import PathRankingModel
+    from src.model import get_model_class
 
     # Allow loading datasets saved from notebooks
     import __main__ as _main
@@ -337,6 +338,9 @@ if __name__ == "__main__":
     parser.add_argument("--retriever", type=str, default="kgscout",
                         choices=["kgscout", "cosine"],
                         help="Retriever type (default: kgscout)")
+    parser.add_argument("--model-class", type=str, default=None,
+                        choices=["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"],
+                        help="Model architecture variant for ablation (default: PathRankingModel)")
 
     args = parser.parse_args()
 
@@ -355,33 +359,43 @@ if __name__ == "__main__":
 
     print("=" * 70)
     print("GENERATE SELECTED TRIPLETS")
-    print(f"  Model:     {args.model_path}")
-    print(f"  Test data: {args.test_data}")
-    print(f"  Output:    {args.output_dir}")
-    print(f"  Top-k:     {args.top_k}")
-    print(f"  Sample-k:  {args.sample_k}")
-    print(f"  Retriever: {args.retriever}")
-    print(f"  Device:    {device}")
+    print(f"  Model:       {args.model_path}")
+    print(f"  Model class: {args.model_class or 'PathRankingModel (default)'}")
+    print(f"  Test data:   {args.test_data}")
+    print(f"  Output:      {args.output_dir}")
+    print(f"  Top-k:       {args.top_k}")
+    print(f"  Sample-k:    {args.sample_k}")
+    print(f"  Retriever:   {args.retriever}")
+    print(f"  Device:      {device}")
     print("=" * 70)
 
     # Load model if kgscout
     model = None
     if args.retriever == "kgscout":
         print("Loading model...")
-        model = PathRankingModel(hidden_size=384, device=device)
-        ckpt = _torch.load(args.model_path, weights_only=False, map_location="cpu")
-        if "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
+        ModelClass = get_model_class(args.model_class)
+
+        # Use strict from_pretrained if it's an ablation variant
+        if args.model_class is not None:
+            # model_path points to path_ranker.pt — from_pretrained expects the directory
+            model_dir = os.path.dirname(args.model_path)
+            model = ModelClass.from_pretrained(model_dir, device=device)
         else:
-            # save_pretrained format (component-level state dicts)
-            for key, val in ckpt.items():
-                if key in ('temperature', 'baseline'):
-                    getattr(model, key).data = val.to(device)
-                elif hasattr(model, key):
-                    getattr(model, key).load_state_dict(val)
-        model.to(device)
+            # Default PathRankingModel loading
+            model = PathRankingModel(hidden_size=384, device=device)
+            ckpt = _torch.load(args.model_path, weights_only=False, map_location="cpu")
+            if "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+            else:
+                # save_pretrained format (component-level state dicts)
+                for key, val in ckpt.items():
+                    if key in ('temperature', 'baseline'):
+                        getattr(model, key).data = val.to(device)
+                    elif hasattr(model, key):
+                        getattr(model, key).load_state_dict(val)
+            model.to(device)
         model.eval()
-        print("  Model loaded.")
+        print(f"  Model loaded ({ModelClass.__name__}).")
 
     # Load test data and create DataLoader
     print("Loading test data...")

@@ -51,7 +51,7 @@ experiments:
   model_variants: ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
 
   # Reward ablation variant names
-  reward_variants: ["no_pres", "no_conn", "no_path", "only_pres", "only_conn", "only_cov"]
+  reward_variants: ["only_presence", "only_connection"]
 
 # Default hyperparameters
 defaults:
