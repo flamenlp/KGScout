@@ -2,3 +2,4 @@
 test_*.py
 verify_task*.md
 *.pyc
+logs/*.log

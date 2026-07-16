@@ -1,0 +1,95 @@
+# =============================================================================
+# KGScout Directory Mapping
+# =============================================================================
+# Central configuration for all data paths, output paths, and experiment settings.
+# All scripts read from this file — update paths here when moving to a new machine.
+# =============================================================================
+
+# Dataset paths (absolute paths to preprocessed .pt files)
+datasets:
+  cwq:
+    train: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/hdd1/sourav23099/cwq/cwq-rml-v2/test/test_jointrainer_path_dataset_v3_ppr.pt"
+  metaqa:
+    train: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-train.pt"
+    val: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-val.pt"
+    test: "/mnt/hdd1/sourav23099/metaqa/processed/metaqa-2hop-test.pt"
+  webqsp:
+    train: "/mnt/hdd1/sourav23099/webqsp-v21/train/train_jointrainer_path_dataset_v3_ppr.pt"
+    val:  "/mnt/hdd1/sourav23099/webqsp-v21/val/val_jointrainer_path_dataset_v3_ppr.pt"
+    test: "/mnt/hdd1/sourav23099/webqsp-v21/test/test_jointrainer_path_dataset_v3_ppr.pt"
+
+# Result output directories
+results:
+  base: "./results"
+
+  # Ablation-2: Reversed attention architecture & reward ablations
+  ablation2:
+    model_ablation: "./results/ablation-2/cwq-model-ablation"
+    reward_ablation: "./results/ablation-2/cwq-reward-ablation"
+
+  # K-value ablation study
+  k_ablation: "./results/k-ablation"
+
+  # Full pipeline (train → coverage → triplets → LLM inference)
+  full_pipeline: "./results/full-pipeline"
+
+  # Cosine baseline K-ablation (no trained model, uses cosine-sorted triplets)
+  cosine_k_ablation: "./results/cosine-k-ablation"
+
+  # Generalization study (MetaQA)
+  generalization: "./results/generalization"
+
+# Experiment configuration
+experiments:
+  # K-ablation: values of k to sweep
+  k_ablation:
+    k_values: [30, 50, 150]
+
+  # Model ablation variant names
+  model_variants: ["no-ppr", "no-rt", "no-tt", "no-gate", "no-ra", "no-ta"]
+
+  # Reward ablation variant names
+  reward_variants: ["only_presence", "only_connection"]
+
+# Default hyperparameters
+defaults:
+  top_k: 100
+  sample_k: 1000
+  num_epochs: 30
+  early_stopping_patience: 10
+  llm_model: "llama"
+  pick_last_checkpoint: false  # if true, pick checkpoint_epoch_N (last); if false, pick checkpoint_best_epoch_N
+
+# LLM model identifiers
+llm_models:
+  llama: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  qwen: "Qwen/Qwen-7B-Chat"
+  deepseek: "deepseek-ai/deepseek-llm-7b-chat"
+
+# Log paths
+logs:
+  base: "./logs"
+  k_ablation: "./logs/k-ablation.log"
+  cosine_k_ablation: "./logs/cosine-k-ablation.log"
+  ablation2: "./logs/ablation2.log"
+  inference: "./logs/ablation_inference.log"
+  vllm_inference: "./logs/ablation_vllm_inference.log"
+  triplet_analysis: "./logs/triplet_analysis.log"
+
+# Generalization study (MetaQA) paths
+generalization:
+  kb_path: "data/metaqa/kb.txt"
+  qa_train_1hop: "data/metaqa/1-hop/vanilla/qa_train.txt"
+  qa_train_2hop: "data/metaqa/2-hop/vanilla/qa_train.txt"
+  qa_train_3hop: "data/metaqa/3-hop/vanilla/qa_train.txt"
+  qa_dev_1hop: "data/metaqa/1-hop/vanilla/qa_dev.txt"
+  qa_dev_2hop: "data/metaqa/2-hop/vanilla/qa_dev.txt"
+  qa_dev_3hop: "data/metaqa/3-hop/vanilla/qa_dev.txt"
+  qa_test_1hop: "data/metaqa/1-hop/vanilla/qa_test.txt"
+  qa_test_2hop: "data/metaqa/2-hop/vanilla/qa_test.txt"
+  qa_test_3hop: "data/metaqa/3-hop/vanilla/qa_test.txt"
+  processed_dir: "/mnt/hdd1/sourav23099/metaqa/processed"
+  embedding_model: "all-MiniLM-L6-v2"
+  default_hop: 2

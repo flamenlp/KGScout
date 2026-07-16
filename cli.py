@@ -141,7 +141,7 @@ def run_preprocess_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.preprocess_service import PreprocessService
+    from src.services.preprocess_service import PreprocessService
     
     # Validate input file exists
     validate_file_exists(args.input, "Input data file")
@@ -181,7 +181,9 @@ def run_train_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.train_service import TrainService
+    from src.services.train_service import TrainService
+    from src.model import get_model_class
+    from src.training.rewards import get_reward_function
     
     # Validate input files exist
     validate_file_exists(args.train_data, "Training data file")
@@ -193,6 +195,10 @@ def run_train_command(args):
     # Validate training arguments for conflicts
     validate_train_arguments(args)
     
+    # Resolve model class and reward function
+    model_class = get_model_class(args.model_class)
+    reward_function = get_reward_function(args.reward_function)
+    
     print("=" * 60)
     print("TRAINING PIPELINE")
     print("=" * 60)
@@ -202,6 +208,10 @@ def run_train_command(args):
     print(f"Main training k parameter: {args.k}")
     print(f"Main training epochs: {args.num_epochs}")
     print(f"Learning rate: {args.learning_rate}")
+    if args.model_class:
+        print(f"Model class: {args.model_class} ({model_class.__name__})")
+    if args.reward_function:
+        print(f"Reward function: {args.reward_function}")
     print("=" * 60)
     
     # Create service and run training
@@ -217,7 +227,10 @@ def run_train_command(args):
         weight_decay=args.weight_decay,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         validation_interval=args.validation_interval,
-        early_stopping_patience=args.early_stopping_patience
+        early_stopping_patience=args.early_stopping_patience,
+        sample_k=args.sample_k,
+        model_class=model_class,
+        reward_function=reward_function,
     )
     
     # Print summary
@@ -237,7 +250,7 @@ def run_inference_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.inference_service import InferenceService
+    from src.services.inference_service import InferenceService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -284,7 +297,7 @@ def run_evaluate_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.evaluate_service import EvaluateService
+    from src.services.evaluate_service import EvaluateService
     
     # Validate input files exist
     validate_file_exists(args.model_path, "Model checkpoint")
@@ -306,7 +319,8 @@ def run_evaluate_command(args):
     metrics = service.evaluate(
         model_path=args.model_path,
         test_data_path=args.test_data,
-        top_k=args.top_k
+        top_k=args.top_k,
+        sample_k=args.sample_k
     )
     
     # Print metrics
@@ -326,7 +340,7 @@ def run_llm_comparison_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.llm_comparison_service import LLMComparisonService
+    from src.services.llm_comparison_service import LLMComparisonService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -361,14 +375,17 @@ def run_llm_comparison_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = LLMComparisonService()
         results = service.run_comparison(
-            dataset=args.dataset,
             llm_model=args.llm_model,
-            retriever_type=args.retriever_type,
             k=args.k,
+            dataset_path=dataset_path,
             model_path=args.model_path,
-            output_dir=args.output_dir
+            retriever_type=args.retriever_type,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -385,17 +402,14 @@ def run_llm_comparison_command(args):
     print("\n" + "=" * 60)
     print("ANALYSIS COMPLETE")
     print("=" * 60)
-    print(f"Total Questions: {results['total_questions']}")
+    print(f"Total Questions: {results.get('total_samples', 0)}")
     print(f"\nMetrics:")
-    print(f"  Hit Score:       {results['hit']:.4f}")
-    print(f"  Hit@1 Score:     {results['hit_at_1']:.4f}")
-    print(f"  Macro F1:        {results['macro_f1']:.4f}")
-    print(f"  Macro Precision: {results['macro_precision']:.4f}")
-    print(f"  Macro Recall:    {results['macro_recall']:.4f}")
-    print(f"  Exact Match:     {results['exact_match']:.4f}")
-    print(f"\nOutput Files:")
-    print(f"  Predictions: {results['predictions_file']}")
-    print(f"  Results:     {results['results_file']}")
+    print(f"  Hit Score:       {results.get('hit', 0):.2f}%")
+    print(f"  Hit@1 Score:     {results.get('hit_at_1', 0):.2f}%")
+    print(f"  Macro F1:        {results.get('macro_f1', 0):.2f}%")
+    print(f"  Macro Precision: {results.get('macro_precision', 0):.2f}%")
+    print(f"  Macro Recall:    {results.get('macro_recall', 0):.2f}%")
+    print(f"  Exact Match:     {results.get('exact_match', 0):.2f}%")
     print("=" * 60)
 
 
@@ -406,7 +420,7 @@ def run_k_ablation_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.k_ablation_service import KAblationService
+    from src.services.k_ablation_service import KAblationService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -446,14 +460,17 @@ def run_k_ablation_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = KAblationService()
         results = service.run_ablation(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             retriever_type=args.retriever_type,
             k_values=k_values,
             k=args.k,
             model_path=args.model_path,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -474,7 +491,7 @@ def run_coverage_analysis_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.coverage_analysis_service import CoverageAnalysisService
+    from src.services.coverage_analysis_service import CoverageAnalysisService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -512,12 +529,16 @@ def run_coverage_analysis_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = CoverageAnalysisService()
         results = service.run_coverage_analysis(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             model_path=args.model_path,
             k_values=k_values,
-            output_dir=args.output_dir
+            dataset_name=args.dataset,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -534,8 +555,6 @@ def run_coverage_analysis_command(args):
     print("\n" + "=" * 60)
     print("ANALYSIS COMPLETE")
     print("=" * 60)
-    print(f"Results saved to: {results['output_file']}")
-    print("=" * 60)
 
 
 def run_statistical_analysis_command(args):
@@ -545,7 +564,7 @@ def run_statistical_analysis_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    from services.statistical_analysis_service import StatisticalAnalysisService
+    from src.services.statistical_analysis_service import StatisticalAnalysisService
     
     # Validate dataset parameter
     if args.dataset not in ['webqsp', 'cwq']:
@@ -575,12 +594,16 @@ def run_statistical_analysis_command(args):
     
     # Execute service
     try:
+        from src.utils.evaluation_utils import get_dataset_path
+        dataset_path = get_dataset_path(args.dataset)
+
         service = StatisticalAnalysisService()
         results = service.run_statistical_analysis(
-            dataset=args.dataset,
+            dataset_path=dataset_path,
             model_path=args.model_path,
             k=args.k,
-            output_dir=args.output_dir
+            dataset_name=args.dataset,
+            output_dir=args.output_dir,
         )
     except FileNotFoundError as e:
         print(f"\nError: {str(e)}", file=sys.stderr)
@@ -716,14 +739,13 @@ Examples:
         '--k',
         type=int,
         required=True,
-        choices=[30, 50, 100, 150],
-        help='K value for main training phase (number of triplets to sample per question)'
+        help='K value for main training phase (number of top triplets to select per question)'
     )
     train_parser.add_argument(
         '--num-epochs',
         type=int,
-        default=50,
-        help='Number of epochs for main training phase (default: 50)'
+        default=30,
+        help='Number of epochs for main training phase (default: 30)'
     )
     train_parser.add_argument(
         '--learning-rate',
@@ -740,8 +762,8 @@ Examples:
     train_parser.add_argument(
         '--gradient-accumulation-steps',
         type=int,
-        default=8,
-        help='Number of gradient accumulation steps (default: 8)'
+        default=32,
+        help='Number of gradient accumulation steps (default: 32)'
     )
     train_parser.add_argument(
         '--validation-interval',
@@ -760,6 +782,26 @@ Examples:
         type=int,
         default=100,
         help='Number of warmup steps for learning rate scheduler (default: 100)'
+    )
+    train_parser.add_argument(
+        '--sample-k',
+        type=int,
+        default=1000,
+        help='Pool size N: number of prefiltered triplets per question (default: 1000)'
+    )
+    train_parser.add_argument(
+        '--model-class',
+        type=str,
+        default=None,
+        choices=['no-ppr', 'no-rt', 'no-tt', 'no-gate', 'no-ra', 'no-ta'],
+        help='Model architecture variant for ablation (default: PathRankingModel)'
+    )
+    train_parser.add_argument(
+        '--reward-function',
+        type=str,
+        default=None,
+        choices=['only_presence', 'only_connection'],
+        help='Reward function variant for ablation (default: compute_reward_v8)'
     )
     
     # ========================================================================
@@ -818,6 +860,12 @@ Examples:
         type=int,
         default=100,
         help='Number of top triplets to evaluate (default: 100)'
+    )
+    evaluate_parser.add_argument(
+        '--sample-k',
+        type=int,
+        default=1000,
+        help='Number of top triplets to feed to model as candidate pool (default: 1000)'
     )
     
     # ========================================================================
