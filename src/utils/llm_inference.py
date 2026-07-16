@@ -490,7 +490,7 @@ Instructions:
 3> Starting from the Question Entity, find triplets containing it, then follow connections through shared entities until you reach the answer. You may need to chain through 2-3 triplets via intermediate nodes (e.g., m.xxxxx CVT nodes).
 4> CRITICAL: When multiple candidate entities appear, verify each one against ALL constraints in the question. Only select entities that satisfy every condition. Reject candidates that match only some constraints.
 5> Match the semantic meaning of relations to what the question asks. "film performance character" relates to "who played", "location country capital" relates to "based in", etc.
-6> The triplets are ordered by relevance. Focus on the first 30 triplets for the main reasoning path, but scan further if needed.
+6> The triplets are ordered by relevance. Your answer must be derived ONLY from the provided triplets.
 7> Provide your answer in JSON format: {ans_format}. Only return {na_format} if you are certain that NO triplet contains any entity that could answer the question. When in doubt, provide your best answer from the triplets.
 8> Ensure answers do not contain duplicate entries. Keep reasoning brief and structured.
 
