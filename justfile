@@ -383,6 +383,7 @@ full-pipeline dataset topk="" samplek="":
             --val-data "$VAL" \
             --checkpoint-dir "$MODEL_DIR" \
             --k $TOPK \
+            --sample-k $SAMPLEK \
             --num-epochs 30 \
             --early-stopping-patience 10 \
             2>&1 | tee -a "$LOG"
