@@ -315,8 +315,9 @@ preprocess-metaqa hop=metaqa_dataset_hop:
 #        just full-pipeline metaqa          (uses default 2-hop from config)
 #        just full-pipeline cwq 50       (override top-k, default from config.yml)
 #        just full-pipeline cwq 50 500   (override top-k and sample-k)
+#        just full-pipeline cwq 100 1000 qwen  (override LLM model)
 
-full-pipeline dataset topk="" samplek="":
+full-pipeline dataset topk="" samplek="" llm="":
     #!/usr/bin/env bash
 
     # --- Read paths from config.yml ---
@@ -347,6 +348,12 @@ full-pipeline dataset topk="" samplek="":
     SAMPLEK="{{samplek}}"
     if [ -z "$SAMPLEK" ]; then
         SAMPLEK="1000"
+    fi
+
+    # Override LLM model if provided
+    LLM_OVERRIDE="{{llm}}"
+    if [ -n "$LLM_OVERRIDE" ]; then
+        LLM_MODEL="$LLM_OVERRIDE"
     fi
 
     BASE="./results/full-pipeline/{{dataset}}/k${TOPK}-N${SAMPLEK}"
@@ -441,7 +448,7 @@ full-pipeline dataset topk="" samplek="":
     fi
 
     # ---- STEP 4: vLLM LLM Inference (hit, hit@1, f1, precision, recall) ----
-    LLM_DIR="$BASE/llm-inference"
+    LLM_DIR="$BASE/${LLM_MODEL}-inference"
     LLM_METRICS="$LLM_DIR/llm_metrics.json"
 
     if [ -f "$LLM_METRICS" ]; then
@@ -453,7 +460,7 @@ full-pipeline dataset topk="" samplek="":
         exit 1
     else
         echo "" | tee -a "$LOG"
-        echo ">>> STEP 4: Running vLLM inference (top-k=$TOPK)..." | tee -a "$LOG"
+        echo ">>> STEP 4: Running vLLM inference (top-k=$TOPK, llm=$LLM_MODEL)..." | tee -a "$LOG"
         python run_vllm_inference_ablation.py \
             --input "$TRIPLET_FILE" \
             --output "$LLM_DIR" \
@@ -465,12 +472,12 @@ full-pipeline dataset topk="" samplek="":
     # ---- Summary ----
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "FULL PIPELINE COMPLETE: {{dataset}} | k=$TOPK | N=$SAMPLEK"   | tee -a "$LOG"
+    echo "FULL PIPELINE COMPLETE: {{dataset}} | k=$TOPK | N=$SAMPLEK | llm=$LLM_MODEL" | tee -a "$LOG"
     echo "  Results: $BASE/"                                            | tee -a "$LOG"
     echo "    model/             - trained checkpoint"                   | tee -a "$LOG"
     echo "    triplet-analysis/  - selected_triplets.json"              | tee -a "$LOG"
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
-    echo "    llm-inference/     - llm_metrics.json"                    | tee -a "$LOG"
+    echo "    ${LLM_MODEL}-inference/ - llm_metrics.json"               | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
 
