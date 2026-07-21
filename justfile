@@ -138,7 +138,7 @@ k-ablation dataset:
 # K-ABLATION-COSINE: Cosine baseline (no training) → Triplet Selection → vLLM Inference
 # ============================================================================
 
-k-ablation-cosine dataset:
+k-ablation-cosine dataset llm="":
     #!/usr/bin/env bash
 
     # --- Read paths from config.yml ---
@@ -153,6 +153,12 @@ k-ablation-cosine dataset:
     K_VALUES=$(echo "$YAML_OUTPUT" | sed -n '4p')
     LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
 
+    # Override LLM model if provided
+    LLM_OVERRIDE="{{llm}}"
+    if [ -n "$LLM_OVERRIDE" ]; then
+        LLM_MODEL="$LLM_OVERRIDE"
+    fi
+
     # Cosine ablation base dir with dataset subdirectory
     BASE="./results/cosine-k-ablation/{{dataset}}"
 
@@ -160,7 +166,7 @@ k-ablation-cosine dataset:
     mkdir -p logs
 
     echo "============================================================" | tee -a "$LOG"
-    echo "K-ABLATION-COSINE: {{dataset}} | k=$K_VALUES"                 | tee -a "$LOG"
+    echo "K-ABLATION-COSINE: {{dataset}} | k=$K_VALUES | llm=$LLM_MODEL" | tee -a "$LOG"
     echo "  Retriever: cosine (no trained model)"                       | tee -a "$LOG"
     echo "  Test data: $TEST"                                           | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
@@ -209,19 +215,19 @@ k-ablation-cosine dataset:
 
     # ---- PHASE 3: vLLM LLM Inference (all k-values) ----
     echo "" | tee -a "$LOG"
-    echo ">>> PHASE 3: vLLM inference (all k-values)" | tee -a "$LOG"
+    echo ">>> PHASE 3: vLLM inference (all k-values, llm=$LLM_MODEL)" | tee -a "$LOG"
 
     for K in $K_VALUES; do
         TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
-        RESULT_DIR="$BASE/k${K}/model-result"
+        RESULT_DIR="$BASE/k${K}/${LLM_MODEL}-inference"
         METRICS_FILE="$RESULT_DIR/llm_metrics.json"
 
         if [ -f "$METRICS_FILE" ]; then
-            echo "  [k=$K] LLM results exist. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] LLM results exist ($LLM_MODEL). Skipping." | tee -a "$LOG"
         elif [ ! -f "$TRIPLET_FILE" ]; then
             echo "  [k=$K] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            echo "  [k=$K] Running vLLM inference (top-k=$K, llm=$LLM_MODEL)..." | tee -a "$LOG"
             python run_vllm_inference_ablation.py \
                 --input "$TRIPLET_FILE" \
                 --output "$RESULT_DIR" \
@@ -233,7 +239,7 @@ k-ablation-cosine dataset:
 
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/"               | tee -a "$LOG"
+    echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/ (llm=$LLM_MODEL)" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
 
