@@ -603,7 +603,7 @@ def load_llm_model(
     model_map = {
         'llama': 'meta-llama/Meta-Llama-3.1-8B-Instruct',
         'qwen': 'Qwen/Qwen-7B-Chat',
-        'deepseek': 'deepseek-ai/deepseek-llm-7b-chat'
+        'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
     }
     
     if model_name not in model_map:
