@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -41,6 +42,7 @@ DATA_PATH = "/mnt/hdd1/sourav23099/webqsp-v21/val/val_jointrainer_path_dataset_v
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 TOP_K = 100
 SAMPLE_K = 1000
+COSINE_POOL_SIZE = 10000  # Simulate full candidate pool for cosine scoring
 # =============================================================================
 
 
@@ -176,19 +178,29 @@ def benchmark(
         end = time.perf_counter()
         cosine_embed_latencies.append((end - start) * 1000)
 
-        # ── Stage 2: Cosine Similarity Scoring + Top-K ───────────────────────
+        # ── Stage 2: Cosine Similarity Scoring + Top-K (simulated 10K pool) ───
+        # Pad triplet embeddings to simulate full ~10K candidate pool
+        # Padding is done OUTSIDE the timing to isolate actual compute cost
+        n_current = triplet_embeds.shape[0]
+        if n_current < COSINE_POOL_SIZE:
+            # Repeat existing embeddings to reach ~10K
+            repeats = (COSINE_POOL_SIZE // n_current) + 1
+            triplet_embeds_full = triplet_embeds.repeat(repeats, 1)[:COSINE_POOL_SIZE]
+        else:
+            triplet_embeds_full = triplet_embeds[:COSINE_POOL_SIZE]
+
         if device == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
 
-        # Normalize and compute cosine similarity
+        # Normalize and compute cosine similarity against full 10K pool
         q_norm = F.normalize(question_embedding.unsqueeze(0), p=2, dim=-1)  # (1, 384)
-        t_norm = F.normalize(triplet_embeds, p=2, dim=-1)                    # (N, 384)
-        cosine_scores = torch.mm(q_norm, t_norm.t()).squeeze(0)              # (N,)
+        t_norm = F.normalize(triplet_embeds_full, p=2, dim=-1)              # (10K, 384)
+        cosine_scores = torch.mm(q_norm, t_norm.t()).squeeze(0)             # (10K,)
 
-        # Top-K selection by cosine score
-        k = min(top_k, len(cosine_scores))
-        _ = torch.topk(cosine_scores, k)
+        # Top-1000 selection from the 10K pool (cosine retrieval step)
+        k_cosine = min(SAMPLE_K, len(cosine_scores))
+        _ = torch.topk(cosine_scores, k_cosine)
 
         if device == "cuda":
             torch.cuda.synchronize()
@@ -261,7 +273,7 @@ def print_results(results: dict):
         results["stage1_cosine_embedding"],
     )
     print_stage_stats(
-        "Stage 2: Cosine Similarity Scoring + Top-K Selection",
+        f"Stage 2: Cosine Similarity Scoring + Top-{SAMPLE_K} (from {COSINE_POOL_SIZE} triplets)",
         results["stage2_cosine_scoring"],
     )
     print_stage_stats(
@@ -329,6 +341,14 @@ def main():
 
     # Print results
     print_results(results)
+
+    # Save results to JSON
+    results_dir = os.path.join(PROJECT_ROOT, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    output_path = os.path.join(results_dir, "performance_result.json")
+    with open(output_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved to: {output_path}")
 
 
 if __name__ == "__main__":
