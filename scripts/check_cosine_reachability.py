@@ -35,6 +35,12 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.metrics import compute_answer_coverage, compute_path_coverage
+from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
+
+# Allow loading datasets saved from notebooks where JointTrainingDatasetv3PPR
+# was defined in __main__. torch.load/unpickle looks up __main__ for the class.
+import __main__
+__main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
