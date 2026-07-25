@@ -102,11 +102,9 @@ class StatisticalAnalysisService:
             FileNotFoundError if no checkpoint found.
         """
         import importlib.util
-        # Load find_checkpoint.py as a module without importing via package path
-        script_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "scripts", "find_checkpoint.py"
-        )
+        # Load find_checkpoint.py: service is at src/services/, project root is 3 levels up
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script_path = os.path.join(project_root, "scripts", "find_checkpoint.py")
         spec = importlib.util.spec_from_file_location("find_checkpoint_module", script_path)
         fc_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fc_module)
