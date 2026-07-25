@@ -101,7 +101,16 @@ class StatisticalAnalysisService:
         Raises:
             FileNotFoundError if no checkpoint found.
         """
-        from scripts.find_checkpoint import find_checkpoint
+        import importlib.util
+        # Load find_checkpoint.py as a module without importing via package path
+        script_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "find_checkpoint.py"
+        )
+        spec = importlib.util.spec_from_file_location("find_checkpoint_module", script_path)
+        fc_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fc_module)
+        find_checkpoint = fc_module.find_checkpoint
 
         # Primary: k-ablation
         primary_train_dir = os.path.join(
