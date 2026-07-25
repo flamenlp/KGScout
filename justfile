@@ -754,3 +754,46 @@ run-ablations dataset:
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
     echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# STATISTICAL-ANALYSIS: Compare cosine vs KGScout retrievers with case categorization
+# ============================================================================
+# Loads test dataset + model checkpoints directly (no JSON triplet parsing).
+# Categorizes each question into 6 cases based on answer coverage and path overlap.
+#
+# Model checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/checkpoint_best_epoch_*/path_ranker.pt
+#   → fallback: full-pipeline/{dataset}/k{K}-N1000/model/main_training_k{K}/...
+#
+# Test data path: read from config.yml (datasets.{dataset}.test)
+#
+# Usage: just statistical-analysis cwq
+#        just statistical-analysis webqsp
+#        just statistical-analysis cwq "30 50 100 150"
+
+statistical-analysis dataset kvalues="30 50 100 150":
+    #!/usr/bin/env bash
+
+    echo "============================================================"
+    echo "STATISTICAL ANALYSIS: {{dataset}}"
+    echo "  K values: {{kvalues}}"
+    echo "============================================================"
+
+    # Build --k-values argument
+    K_ARGS=""
+    for K in {{kvalues}}; do
+        K_ARGS="$K_ARGS $K"
+    done
+
+    python scripts/run_statistical_analysis.py \
+        --dataset "{{dataset}}" \
+        --k-values $K_ARGS \
+        --results-base "./results" \
+        --sample-k 1000
+
+    echo ""
+    echo "============================================================"
+    echo "STATISTICAL ANALYSIS COMPLETE: {{dataset}}"
+    echo "  Results: ./results/statistical-analysis/{{dataset}}/"
+    echo "============================================================"
