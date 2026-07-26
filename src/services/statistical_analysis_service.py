@@ -22,6 +22,13 @@ from src.preprocess.sampled_dataset import SampledJointTrainingDataset
 from src.utils.triplet_selector import (
     select_triplets_kgscout, select_triplets_cosine, _extract_metadata_from_batch
 )
+from src.utils.failure_analysis import (
+    compute_lexical_overlap,
+    compute_min_hop,
+    classify_kgscout_failure,
+    aggregate_case5_stats,
+    aggregate_failure_funnel,
+)
 
 
 class StatisticalAnalysisService:
@@ -46,8 +53,16 @@ class StatisticalAnalysisService:
     # Data loading
     # -------------------------------------------------------------------
 
-    def _create_dataloader(self, dataset_path: str, sample_k: int = 1000) -> DataLoader:
-        """Load test dataset and create DataLoader(batch_size=1)."""
+    def _create_dataloader(self, dataset_path: str, sample_k: int = 1000):
+        """
+        Load test dataset and create DataLoader(batch_size=1).
+
+        Returns:
+            Tuple of (DataLoader, JointTrainingDatasetv3PPR).
+            The full_dataset holds all triplets per sample (no truncation) and
+            is used to access the complete 2-hop subgraph for failure analysis
+            via full_dataset[idx]["topk_rel_data"].
+        """
         import __main__
         from src.preprocess.joint_dataset import JointTrainingDatasetv3PPR
         __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
@@ -58,8 +73,14 @@ class StatisticalAnalysisService:
         data = torch.load(dataset_path, weights_only=False, map_location="cpu")
         print(f"  Loaded {len(data)} samples from {dataset_path}")
 
-        dataset = SampledJointTrainingDataset(data, k=sample_k)
-        return DataLoader(dataset, batch_size=1, shuffle=False)
+        # full_dataset holds all triplets per sample (untruncated)
+        # PPR scores are pre-saved in .pt so JointTrainingDatasetv3PPR
+        # skips PPR recomputation (fast path via "graph_features" check)
+        full_dataset = JointTrainingDatasetv3PPR(data)
+
+        sampled_dataset = SampledJointTrainingDataset(full_dataset, k=sample_k)
+        dataloader = DataLoader(sampled_dataset, batch_size=1, shuffle=False)
+        return dataloader, full_dataset
 
     def _load_model(self, model_path: str) -> nn.Module:
         """Load model from checkpoint file (path_ranker.pt)."""
@@ -269,7 +290,7 @@ class StatisticalAnalysisService:
         kgscout_triplets: List[Tuple[str, str, str]],
         q_entity: List[str],
         a_entity: List[str],
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], List, List]:
         """
         Categorize question into one of six cases based on coverage metrics.
 
@@ -279,8 +300,10 @@ class StatisticalAnalysisService:
         - 0.3 < overlap_ratio < 0.7 → None (grey zone, skipped)
 
         Returns:
-            Case identifier string ('case1' through 'case6'), or None if in the
-            Jaccard grey zone (0.3–0.7).
+            Tuple of (case_label, cosine_paths, kgscout_paths).
+            case_label is one of 'case1'..'case6', or None if in the grey zone.
+            Paths are returned so the caller can use them for extended analysis
+            (hop count, etc.) without recomputation.
         """
         cosine_answer_cov = self._check_answer_entity_presence(cosine_triplets, a_entity)
         kgscout_answer_cov = self._check_answer_entity_presence(kgscout_triplets, a_entity)
@@ -298,23 +321,23 @@ class StatisticalAnalysisService:
 
         # Case 6: Both fail (no answer entity in either)
         if not cosine_answer_cov and not kgscout_answer_cov:
-            return 'case6'
+            return 'case6', cosine_paths, kgscout_paths
 
         # Case 1: Cosine no relevant, KGscout some relevant
         if not cosine_answer_cov and kgscout_answer_cov:
-            return 'case1'
+            return 'case1', cosine_paths, kgscout_paths
 
         # Case 5: Cosine better (cosine has answer, KGscout doesn't)
         if cosine_answer_cov and not kgscout_answer_cov:
-            return 'case5'
+            return 'case5', cosine_paths, kgscout_paths
 
         # Case 2: Cosine relevant no path, KGscout has path
         if cosine_answer_cov and not cosine_has_path and kgscout_has_path:
-            return 'case2'
+            return 'case2', cosine_paths, kgscout_paths
 
         # Case 5b: Both have answer, cosine has path but KGscout doesn't
         if cosine_has_path and not kgscout_has_path:
-            return 'case5'
+            return 'case5', cosine_paths, kgscout_paths
 
         # Case 3 & 4: Both have paths — use Jaccard on path triplets
         if cosine_has_path and kgscout_has_path:
@@ -322,14 +345,14 @@ class StatisticalAnalysisService:
                 G_cosine, cosine_paths, G_kgscout, kgscout_paths
             )
             if overlap_ratio <= 0.3:
-                return 'case4'  # non-overlapping
+                return 'case4', cosine_paths, kgscout_paths
             elif overlap_ratio >= 0.7:
-                return 'case3'  # overlapping
+                return 'case3', cosine_paths, kgscout_paths
             else:
-                return None  # grey zone — uncategorized
+                return None, cosine_paths, kgscout_paths  # grey zone
 
-        # Fallback (e.g., both have answer but neither has path)
-        return 'case3'
+        # Fallback (both have answer but neither has path)
+        return 'case3', cosine_paths, kgscout_paths
 
     # -------------------------------------------------------------------
     # Main analysis entry point
@@ -380,7 +403,7 @@ class StatisticalAnalysisService:
 
         # Load test dataloader once (shared across all k values)
         print("\nLoading test dataset...")
-        dataloader = self._create_dataloader(test_data_path, sample_k=sample_k)
+        dataloader, full_dataset = self._create_dataloader(test_data_path, sample_k=sample_k)
 
         all_results = {}
 
@@ -406,6 +429,10 @@ class StatisticalAnalysisService:
             skipped_no_entities = 0
             errors = 0
 
+            # Extended metric accumulators
+            case5_records = []    # for lexical overlap + hop count
+            funnel_records = []   # for KGScout failure funnel (case5 + case6)
+
             with torch.no_grad():
                 for idx, batch in enumerate(tqdm(dataloader, desc=f"  k={k}")):
                     try:
@@ -423,8 +450,8 @@ class StatisticalAnalysisService:
                         kgscout_triplets = select_triplets_kgscout(model, batch, k, self.device)
                         cosine_triplets = select_triplets_cosine(batch, k)
 
-                        # Categorize
-                        case = self._categorize_question(
+                        # Categorize — now returns (case, cosine_paths, kgscout_paths)
+                        case, cosine_paths, kgscout_paths = self._categorize_question(
                             cosine_triplets, kgscout_triplets, q_ents, a_ents
                         )
 
@@ -436,6 +463,38 @@ class StatisticalAnalysisService:
                             "question_id": idx,
                             "question": meta["question"],
                         })
+
+                        # -------------------------------------------------
+                        # Extended analysis A: Case 5 characterization
+                        # Lexical overlap and hop count on cosine top-k triplets
+                        # -------------------------------------------------
+                        if case == 'case5':
+                            overlap = compute_lexical_overlap(meta["question"], cosine_triplets)
+                            hop = compute_min_hop(cosine_paths)
+                            case5_records.append({
+                                "lexical_overlap": overlap,
+                                "min_hop": hop,
+                            })
+
+                        # -------------------------------------------------
+                        # Extended analysis B: KGScout failure funnel
+                        # Runs for ALL KGScout failures (case5 + case6)
+                        # -------------------------------------------------
+                        if case in ('case5', 'case6'):
+                            # Full 2-hop subgraph — access via full_dataset[idx],
+                            # which is a plain list lookup (no recomputation).
+                            full_sample = full_dataset[idx]
+                            full_triplets = [
+                                tuple(t[1])
+                                for t in full_sample["topk_rel_data"]
+                            ]
+                            # Cosine top-1000 pool (what the model was trained on)
+                            pool_triplets = select_triplets_cosine(batch, k=1000)
+
+                            label = classify_kgscout_failure(
+                                full_triplets, pool_triplets, kgscout_triplets, a_ents
+                            )
+                            funnel_records.append({"case": case, "label": label})
                     except Exception as e:
                         errors += 1
                         continue
@@ -465,6 +524,10 @@ class StatisticalAnalysisService:
                     "description": case_descriptions[case_name],
                 }
 
+            # Compute extended metrics
+            case5_extended = aggregate_case5_stats(case5_records)
+            kgscout_failure_funnel = aggregate_failure_funnel(funnel_records)
+
             # Print table
             print(f"\n  {'Case':<10} {'Description':<45} {'Count':<8} {'%':<8}")
             print(f"  {'-'*75}")
@@ -476,6 +539,26 @@ class StatisticalAnalysisService:
             print(f"  Skipped (grey zone 0.3–0.7): {skipped_grey_zone}")
             print(f"  Skipped (no entities): {skipped_no_entities}")
             print(f"  Errors: {errors}")
+
+            # Print Case 5 extended summary
+            print(f"\n  Case 5 Extended (cosine outperforms KGScout):")
+            print(f"    Count:               {case5_extended['count']}")
+            print(f"    Avg lexical overlap: {case5_extended['avg_lexical_overlap']}")
+            print(f"    Avg min hop:         {case5_extended['avg_min_hop']}")
+            print(f"    Hop distribution:    {case5_extended['hop_distribution']}")
+
+            # Print failure funnel summary
+            funnel_all = kgscout_failure_funnel['all_kgscout_failures']
+            print(f"\n  KGScout Failure Funnel (Case 5 + Case 6, total={funnel_all['total']}):")
+            for lbl in ('kg_incomplete', 'candidate_missing', 'selection_failure'):
+                entry = funnel_all[lbl]
+                print(f"    {lbl:<22}: {entry['count']:>5}  ({entry['pct']:.2f}%)")
+
+            funnel_c6 = kgscout_failure_funnel['case6_failures']
+            print(f"\n  KGScout Failure Funnel — Case 6 only (total={funnel_c6['total']}):")
+            for lbl in ('kg_incomplete', 'candidate_missing', 'selection_failure'):
+                entry = funnel_c6[lbl]
+                print(f"    {lbl:<22}: {entry['count']:>5}  ({entry['pct']:.2f}%)")
 
             # Save per-k results
             k_output = {
@@ -493,6 +576,8 @@ class StatisticalAnalysisService:
                     "errors": errors,
                 },
                 "case_statistics": statistics,
+                "case5_extended": case5_extended,
+                "kgscout_failure_funnel": kgscout_failure_funnel,
                 "case_results": {
                     case: questions for case, questions in case_results.items()
                 },
