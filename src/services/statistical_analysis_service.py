@@ -5,6 +5,11 @@ Performs pairwise comparison between cosine-selected and KGScout-selected triple
 across multiple k values. Loads the test dataset and model checkpoint for each k,
 running inference to get (s, r, o) triplets directly — no JSON parsing needed.
 
+Extended analysis (reviewer response):
+  - Case 5: avg lexical overlap + hop count distribution (cosine top-k triplets)
+  - KGScout failure funnel (Case 5 + Case 6): KG incomplete / candidate missing /
+    selection failure, reported separately for Case 6 and all KGScout failures.
+
 Results saved to: results/statistical-analysis/{dataset}/
 """
 
@@ -479,17 +484,23 @@ class StatisticalAnalysisService:
                         # -------------------------------------------------
                         # Extended analysis B: KGScout failure funnel
                         # Runs for ALL KGScout failures (case5 + case6)
+                        # full_dataset[idx] is safe here: SampledJointTrainingDataset
+                        # wraps full_dataset and uses the same indices, so idx from
+                        # enumerate(dataloader) maps directly to full_dataset[idx].
+                        # Both SampledJointTrainingDataset and DataLoader use
+                        # sequential indices from full_dataset (shuffle=False).
                         # -------------------------------------------------
                         if case in ('case5', 'case6'):
-                            # Full 2-hop subgraph — access via full_dataset[idx],
-                            # which is a plain list lookup (no recomputation).
                             full_sample = full_dataset[idx]
+                            # topk_rel_data in raw dataset: [(score, (s, r, o)), ...]
                             full_triplets = [
                                 tuple(t[1])
                                 for t in full_sample["topk_rel_data"]
                             ]
-                            # Cosine top-1000 pool (what the model was trained on)
-                            pool_triplets = select_triplets_cosine(batch, k=1000)
+                            # Cosine top-1000 pool: batch already truncated to
+                            # sample_k=1000 by SampledJointTrainingDataset,
+                            # so this returns all available triplets in the batch.
+                            pool_triplets = select_triplets_cosine(batch, k=sample_k)
 
                             label = classify_kgscout_failure(
                                 full_triplets, pool_triplets, kgscout_triplets, a_ents
