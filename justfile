@@ -772,6 +772,68 @@ run-ablations dataset:
 #        just statistical-analysis webqsp
 #        just statistical-analysis cwq "30 50 100 150"
 
+# ============================================================================
+# HOP-ANALYSIS: Hop-stratified retriever analysis (KGScout vs cosine)
+# ============================================================================
+# Classifies test questions by reasoning hop count (1-hop, 2-hop, ≥3-hop,
+# no-path) using the cosine top-1000 pool graph, then computes ans_present
+# and has_path for both retrievers at each k value.
+#
+# Checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/...  (k=30, 50, 150)
+#   full-pipeline/{dataset}/k{K}-N1000/model/...            (k=100 fallback)
+#
+# Usage: just hop-analysis cwq
+#        just hop-analysis webqsp
+#        just hop-analysis cwq "30 50 100 150"
+
+hop-analysis dataset kvalues="30 50 100 150":
+    #!/usr/bin/env bash
+
+    echo "============================================================"
+    echo "HOP ANALYSIS: {{dataset}}"
+    echo "  K values: {{kvalues}}"
+    echo "============================================================"
+
+    LOG="logs/hop-analysis.log"
+    mkdir -p logs
+
+    # Build --k-values argument
+    K_ARGS=""
+    for K in {{kvalues}}; do
+        K_ARGS="$K_ARGS $K"
+    done
+
+    python scripts/run_hop_analysis.py \
+        --dataset "{{dataset}}" \
+        --k-values $K_ARGS \
+        --results-base "./results" \
+        --sample-k 1000 \
+        2>&1 | tee -a "$LOG"
+
+    echo ""
+    echo "============================================================"
+    echo "HOP ANALYSIS COMPLETE: {{dataset}}"
+    echo "  Results: ./results/hop-analysis/{{dataset}}/"
+    echo "============================================================"
+
+
+# ============================================================================
+# STATISTICAL-ANALYSIS: Compare cosine vs KGScout retrievers with case categorization
+# ============================================================================
+# Loads test dataset + model checkpoints directly (no JSON triplet parsing).
+# Categorizes each question into 6 cases based on answer coverage and path overlap.
+#
+# Model checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/checkpoint_best_epoch_*/path_ranker.pt
+#   → fallback: full-pipeline/{dataset}/k{K}-N1000/model/main_training_k{K}/...
+#
+# Test data path: read from config.yml (datasets.{dataset}.test)
+#
+# Usage: just statistical-analysis cwq
+#        just statistical-analysis webqsp
+#        just statistical-analysis cwq "30 50 100 150"
+
 statistical-analysis dataset kvalues="30 50 100 150":
     #!/usr/bin/env bash
 
