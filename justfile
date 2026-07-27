@@ -773,6 +773,137 @@ run-ablations dataset:
 #        just statistical-analysis cwq "30 50 100 150"
 
 # ============================================================================
+# CROSS-DOMAIN: Test generalisation of a model trained on one dataset against
+#               the test set of another dataset (zero-shot transfer).
+# ============================================================================
+# Loads the best k=100 checkpoint from full-pipeline/{src}/k100-N1000/,
+# runs triplet selection on the target test set, computes retrieval metrics
+# (answer_coverage, path_coverage) and LLM metrics (hit, hit@1, F1, EM)
+# using the llama model.
+#
+# Checkpoint path:
+#   full-pipeline/{src}/k100-N1000/model/main_training_k100/checkpoint_best_epoch_*/path_ranker.pt
+#
+# Output:
+#   results/crossdomain/src-{src}-target-{tgt}/
+#     triplet-result/selected_triplets.json
+#     triplet_metrics/coverage_metrics.json
+#     llama-inference/llm_metrics.json
+#
+# Usage: just cross-domain cwq webqsp
+#        just cross-domain webqsp cwq
+
+cross-domain src tgt:
+    #!/usr/bin/env bash
+
+    K=100
+    SAMPLE_K=1000
+    LLM_MODEL="llama"
+
+    OUT_BASE="./results/crossdomain/src-{{src}}-target-{{tgt}}"
+    LOG="logs/cross-domain.log"
+    mkdir -p logs "$OUT_BASE"
+
+    echo "============================================================" | tee -a "$LOG"
+    echo "CROSS-DOMAIN: src={{src}} → target={{tgt}} | k=$K"           | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+    # ---- Read target test path from config.yml ----
+    TGT_CONFIG=$(python3 scripts/read_config.py "{{tgt}}")
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for target dataset '{{tgt}}'" | tee -a "$LOG"
+        exit 1
+    fi
+    TGT_TEST=$(echo "$TGT_CONFIG" | sed -n '3p')
+
+    if [ ! -f "$TGT_TEST" ]; then
+        echo "ERROR: Target test file not found: $TGT_TEST" | tee -a "$LOG"
+        exit 1
+    fi
+    echo "  Source:      {{src}}"      | tee -a "$LOG"
+    echo "  Target:      {{tgt}}"      | tee -a "$LOG"
+    echo "  Target test: $TGT_TEST"    | tee -a "$LOG"
+    echo "  Output:      $OUT_BASE/"   | tee -a "$LOG"
+
+    # ---- STEP 1: Resolve best checkpoint from full-pipeline/{src}/k100-N1000/ ----
+    TRAIN_DIR="./results/full-pipeline/{{src}}/k${K}-N${SAMPLE_K}/model/main_training_k${K}"
+    CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
+
+    if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+        echo "ERROR: No checkpoint found in $TRAIN_DIR" | tee -a "$LOG"
+        echo "  Run: just full-pipeline {{src}} to train the source model first." | tee -a "$LOG"
+        exit 1
+    fi
+    echo "  Checkpoint:  $CKPT" | tee -a "$LOG"
+
+    # ---- STEP 2: Triplet selection ----
+    TRIPLET_DIR="$OUT_BASE/triplet-result"
+    TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
+
+    if [ -f "$TRIPLET_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: selected_triplets.json exists. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: Generating triplets (src={{src}}, target={{tgt}}, k=$K)..." | tee -a "$LOG"
+        python -m src.utils.triplet_selector \
+            --model-path "$CKPT" \
+            --test-data "$TGT_TEST" \
+            --output-dir "$TRIPLET_DIR" \
+            --top-k $K \
+            --sample-k $SAMPLE_K \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    if [ ! -f "$TRIPLET_FILE" ]; then
+        echo "ERROR: selected_triplets.json not found after step 2. Aborting." | tee -a "$LOG"
+        exit 1
+    fi
+
+    # ---- STEP 3: Retrieval metrics (answer_coverage, path_coverage) ----
+    COVERAGE_DIR="$OUT_BASE/triplet_metrics"
+    COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
+
+    if [ -f "$COVERAGE_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Coverage metrics exist. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Computing retrieval metrics..." | tee -a "$LOG"
+        python scripts/run_coverage_from_triplets.py \
+            "$TRIPLET_FILE" "$COVERAGE_FILE" \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- STEP 4: LLM inference (llama, hit / hit@1 / F1 / EM) ----
+    LLM_DIR="$OUT_BASE/llama-inference"
+    LLM_METRICS="$LLM_DIR/llm_metrics.json"
+
+    if [ -f "$LLM_METRICS" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: LLM metrics exist. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: Running vLLM inference (llama, k=$K)..." | tee -a "$LOG"
+        python run_vllm_inference_ablation.py \
+            --input "$TRIPLET_FILE" \
+            --output "$LLM_DIR" \
+            --llm-model "$LLM_MODEL" \
+            --top-k $K \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    echo "" | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+    echo "CROSS-DOMAIN COMPLETE: src={{src}} → target={{tgt}}"          | tee -a "$LOG"
+    echo "  Results: $OUT_BASE/"                                        | tee -a "$LOG"
+    echo "    triplet-result/    - selected_triplets.json"              | tee -a "$LOG"
+    echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
+    echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
 # HOP-ANALYSIS: Hop-stratified retriever analysis (KGScout vs cosine)
 # ============================================================================
 # Classifies test questions by reasoning hop count (1-hop, 2-hop, ≥3-hop,
