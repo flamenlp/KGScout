@@ -138,7 +138,7 @@ k-ablation dataset:
 # K-ABLATION-COSINE: Cosine baseline (no training) → Triplet Selection → vLLM Inference
 # ============================================================================
 
-k-ablation-cosine dataset:
+k-ablation-cosine dataset llm="":
     #!/usr/bin/env bash
 
     # --- Read paths from config.yml ---
@@ -153,6 +153,12 @@ k-ablation-cosine dataset:
     K_VALUES=$(echo "$YAML_OUTPUT" | sed -n '4p')
     LLM_MODEL=$(echo "$YAML_OUTPUT" | sed -n '7p')
 
+    # Override LLM model if provided
+    LLM_OVERRIDE="{{llm}}"
+    if [ -n "$LLM_OVERRIDE" ]; then
+        LLM_MODEL="$LLM_OVERRIDE"
+    fi
+
     # Cosine ablation base dir with dataset subdirectory
     BASE="./results/cosine-k-ablation/{{dataset}}"
 
@@ -160,7 +166,7 @@ k-ablation-cosine dataset:
     mkdir -p logs
 
     echo "============================================================" | tee -a "$LOG"
-    echo "K-ABLATION-COSINE: {{dataset}} | k=$K_VALUES"                 | tee -a "$LOG"
+    echo "K-ABLATION-COSINE: {{dataset}} | k=$K_VALUES | llm=$LLM_MODEL" | tee -a "$LOG"
     echo "  Retriever: cosine (no trained model)"                       | tee -a "$LOG"
     echo "  Test data: $TEST"                                           | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
@@ -209,19 +215,19 @@ k-ablation-cosine dataset:
 
     # ---- PHASE 3: vLLM LLM Inference (all k-values) ----
     echo "" | tee -a "$LOG"
-    echo ">>> PHASE 3: vLLM inference (all k-values)" | tee -a "$LOG"
+    echo ">>> PHASE 3: vLLM inference (all k-values, llm=$LLM_MODEL)" | tee -a "$LOG"
 
     for K in $K_VALUES; do
         TRIPLET_FILE="$BASE/k${K}/triplet-analysis/selected_triplets.json"
-        RESULT_DIR="$BASE/k${K}/model-result"
+        RESULT_DIR="$BASE/k${K}/${LLM_MODEL}-inference"
         METRICS_FILE="$RESULT_DIR/llm_metrics.json"
 
         if [ -f "$METRICS_FILE" ]; then
-            echo "  [k=$K] LLM results exist. Skipping." | tee -a "$LOG"
+            echo "  [k=$K] LLM results exist ($LLM_MODEL). Skipping." | tee -a "$LOG"
         elif [ ! -f "$TRIPLET_FILE" ]; then
             echo "  [k=$K] ERROR: selected_triplets.json not found. Skipping." | tee -a "$LOG"
         else
-            echo "  [k=$K] Running vLLM inference (top-k=$K)..." | tee -a "$LOG"
+            echo "  [k=$K] Running vLLM inference (top-k=$K, llm=$LLM_MODEL)..." | tee -a "$LOG"
             python run_vllm_inference_ablation.py \
                 --input "$TRIPLET_FILE" \
                 --output "$RESULT_DIR" \
@@ -233,7 +239,7 @@ k-ablation-cosine dataset:
 
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/"               | tee -a "$LOG"
+    echo "K-ABLATION-COSINE COMPLETE. Results in: $BASE/ (llm=$LLM_MODEL)" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
 
@@ -315,8 +321,9 @@ preprocess-metaqa hop=metaqa_dataset_hop:
 #        just full-pipeline metaqa          (uses default 2-hop from config)
 #        just full-pipeline cwq 50       (override top-k, default from config.yml)
 #        just full-pipeline cwq 50 500   (override top-k and sample-k)
+#        just full-pipeline cwq 100 1000 qwen  (override LLM model)
 
-full-pipeline dataset topk="" samplek="":
+full-pipeline dataset topk="" samplek="" llm="":
     #!/usr/bin/env bash
 
     # --- Read paths from config.yml ---
@@ -347,6 +354,12 @@ full-pipeline dataset topk="" samplek="":
     SAMPLEK="{{samplek}}"
     if [ -z "$SAMPLEK" ]; then
         SAMPLEK="1000"
+    fi
+
+    # Override LLM model if provided
+    LLM_OVERRIDE="{{llm}}"
+    if [ -n "$LLM_OVERRIDE" ]; then
+        LLM_MODEL="$LLM_OVERRIDE"
     fi
 
     BASE="./results/full-pipeline/{{dataset}}/k${TOPK}-N${SAMPLEK}"
@@ -383,6 +396,7 @@ full-pipeline dataset topk="" samplek="":
             --val-data "$VAL" \
             --checkpoint-dir "$MODEL_DIR" \
             --k $TOPK \
+            --sample-k $SAMPLEK \
             --num-epochs 30 \
             --early-stopping-patience 10 \
             2>&1 | tee -a "$LOG"
@@ -440,7 +454,7 @@ full-pipeline dataset topk="" samplek="":
     fi
 
     # ---- STEP 4: vLLM LLM Inference (hit, hit@1, f1, precision, recall) ----
-    LLM_DIR="$BASE/llm-inference"
+    LLM_DIR="$BASE/${LLM_MODEL}-inference"
     LLM_METRICS="$LLM_DIR/llm_metrics.json"
 
     if [ -f "$LLM_METRICS" ]; then
@@ -452,7 +466,7 @@ full-pipeline dataset topk="" samplek="":
         exit 1
     else
         echo "" | tee -a "$LOG"
-        echo ">>> STEP 4: Running vLLM inference (top-k=$TOPK)..." | tee -a "$LOG"
+        echo ">>> STEP 4: Running vLLM inference (top-k=$TOPK, llm=$LLM_MODEL)..." | tee -a "$LOG"
         python run_vllm_inference_ablation.py \
             --input "$TRIPLET_FILE" \
             --output "$LLM_DIR" \
@@ -464,12 +478,12 @@ full-pipeline dataset topk="" samplek="":
     # ---- Summary ----
     echo "" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
-    echo "FULL PIPELINE COMPLETE: {{dataset}} | k=$TOPK | N=$SAMPLEK"   | tee -a "$LOG"
+    echo "FULL PIPELINE COMPLETE: {{dataset}} | k=$TOPK | N=$SAMPLEK | llm=$LLM_MODEL" | tee -a "$LOG"
     echo "  Results: $BASE/"                                            | tee -a "$LOG"
     echo "    model/             - trained checkpoint"                   | tee -a "$LOG"
     echo "    triplet-analysis/  - selected_triplets.json"              | tee -a "$LOG"
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
-    echo "    llm-inference/     - llm_metrics.json"                    | tee -a "$LOG"
+    echo "    ${LLM_MODEL}-inference/ - llm_metrics.json"               | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
 
@@ -740,3 +754,239 @@ run-ablations dataset:
     echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
     echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# STATISTICAL-ANALYSIS: Compare cosine vs KGScout retrievers with case categorization
+# ============================================================================
+# Loads test dataset + model checkpoints directly (no JSON triplet parsing).
+# Categorizes each question into 6 cases based on answer coverage and path overlap.
+#
+# Model checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/checkpoint_best_epoch_*/path_ranker.pt
+#   → fallback: full-pipeline/{dataset}/k{K}-N1000/model/main_training_k{K}/...
+#
+# Test data path: read from config.yml (datasets.{dataset}.test)
+#
+# Usage: just statistical-analysis cwq
+#        just statistical-analysis webqsp
+#        just statistical-analysis cwq "30 50 100 150"
+
+# ============================================================================
+# CROSS-DOMAIN: Test generalisation of a model trained on one dataset against
+#               the test set of another dataset (zero-shot transfer).
+# ============================================================================
+# Loads the best k=100 checkpoint from full-pipeline/{src}/k100-N1000/,
+# runs triplet selection on the target test set, computes retrieval metrics
+# (answer_coverage, path_coverage) and LLM metrics (hit, hit@1, F1, EM)
+# using the llama model.
+#
+# Checkpoint path:
+#   full-pipeline/{src}/k100-N1000/model/main_training_k100/checkpoint_best_epoch_*/path_ranker.pt
+#
+# Output:
+#   results/crossdomain/src-{src}-target-{tgt}/
+#     triplet-result/selected_triplets.json
+#     triplet_metrics/coverage_metrics.json
+#     llama-inference/llm_metrics.json
+#
+# Usage: just cross-domain cwq webqsp
+#        just cross-domain webqsp cwq
+
+cross-domain src tgt:
+    #!/usr/bin/env bash
+
+    K=100
+    SAMPLE_K=1000
+    LLM_MODEL="llama"
+
+    OUT_BASE="./results/crossdomain/src-{{src}}-target-{{tgt}}"
+    LOG="logs/cross-domain.log"
+    mkdir -p logs "$OUT_BASE"
+
+    echo "============================================================" | tee -a "$LOG"
+    echo "CROSS-DOMAIN: src={{src}} → target={{tgt}} | k=$K"           | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+    # ---- Read target test path from config.yml ----
+    TGT_CONFIG=$(python3 scripts/read_config.py "{{tgt}}")
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to read config.yml for target dataset '{{tgt}}'" | tee -a "$LOG"
+        exit 1
+    fi
+    TGT_TEST=$(echo "$TGT_CONFIG" | sed -n '3p')
+
+    if [ ! -f "$TGT_TEST" ]; then
+        echo "ERROR: Target test file not found: $TGT_TEST" | tee -a "$LOG"
+        exit 1
+    fi
+    echo "  Source:      {{src}}"      | tee -a "$LOG"
+    echo "  Target:      {{tgt}}"      | tee -a "$LOG"
+    echo "  Target test: $TGT_TEST"    | tee -a "$LOG"
+    echo "  Output:      $OUT_BASE/"   | tee -a "$LOG"
+
+    # ---- STEP 1: Resolve best checkpoint from full-pipeline/{src}/k100-N1000/ ----
+    TRAIN_DIR="./results/full-pipeline/{{src}}/k${K}-N${SAMPLE_K}/model/main_training_k${K}"
+    CKPT=$(python3 scripts/find_checkpoint.py "$TRAIN_DIR" 2>/dev/null)
+
+    if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
+        echo "ERROR: No checkpoint found in $TRAIN_DIR" | tee -a "$LOG"
+        echo "  Run: just full-pipeline {{src}} to train the source model first." | tee -a "$LOG"
+        exit 1
+    fi
+    echo "  Checkpoint:  $CKPT" | tee -a "$LOG"
+
+    # ---- STEP 2: Triplet selection ----
+    TRIPLET_DIR="$OUT_BASE/triplet-result"
+    TRIPLET_FILE="$TRIPLET_DIR/selected_triplets.json"
+
+    if [ -f "$TRIPLET_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: selected_triplets.json exists. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 2: Generating triplets (src={{src}}, target={{tgt}}, k=$K)..." | tee -a "$LOG"
+        python -m src.utils.triplet_selector \
+            --model-path "$CKPT" \
+            --test-data "$TGT_TEST" \
+            --output-dir "$TRIPLET_DIR" \
+            --top-k $K \
+            --sample-k $SAMPLE_K \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    if [ ! -f "$TRIPLET_FILE" ]; then
+        echo "ERROR: selected_triplets.json not found after step 2. Aborting." | tee -a "$LOG"
+        exit 1
+    fi
+
+    # ---- STEP 3: Retrieval metrics (answer_coverage, path_coverage) ----
+    COVERAGE_DIR="$OUT_BASE/triplet_metrics"
+    COVERAGE_FILE="$COVERAGE_DIR/coverage_metrics.json"
+
+    if [ -f "$COVERAGE_FILE" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Coverage metrics exist. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 3: Computing retrieval metrics..." | tee -a "$LOG"
+        python scripts/run_coverage_from_triplets.py \
+            "$TRIPLET_FILE" "$COVERAGE_FILE" \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    # ---- STEP 4: LLM inference (llama, hit / hit@1 / F1 / EM) ----
+    LLM_DIR="$OUT_BASE/llama-inference"
+    LLM_METRICS="$LLM_DIR/llm_metrics.json"
+
+    if [ -f "$LLM_METRICS" ]; then
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: LLM metrics exist. Skipping." | tee -a "$LOG"
+    else
+        echo "" | tee -a "$LOG"
+        echo ">>> STEP 4: Running vLLM inference (llama, k=$K)..." | tee -a "$LOG"
+        python run_vllm_inference_ablation.py \
+            --input "$TRIPLET_FILE" \
+            --output "$LLM_DIR" \
+            --llm-model "$LLM_MODEL" \
+            --top-k $K \
+            2>&1 | tee -a "$LOG"
+    fi
+
+    echo "" | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+    echo "CROSS-DOMAIN COMPLETE: src={{src}} → target={{tgt}}"          | tee -a "$LOG"
+    echo "  Results: $OUT_BASE/"                                        | tee -a "$LOG"
+    echo "    triplet-result/    - selected_triplets.json"              | tee -a "$LOG"
+    echo "    triplet_metrics/   - coverage_metrics.json"               | tee -a "$LOG"
+    echo "    llama-inference/   - llm_metrics.json"                    | tee -a "$LOG"
+    echo "============================================================" | tee -a "$LOG"
+
+
+# ============================================================================
+# HOP-ANALYSIS: Hop-stratified retriever analysis (KGScout vs cosine)
+# ============================================================================
+# Classifies test questions by reasoning hop count (1-hop, 2-hop, ≥3-hop,
+# no-path) using the cosine top-1000 pool graph, then computes ans_present
+# and has_path for both retrievers at each k value.
+#
+# Checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/...  (k=30, 50, 150)
+#   full-pipeline/{dataset}/k{K}-N1000/model/...            (k=100 fallback)
+#
+# Usage: just hop-analysis cwq
+#        just hop-analysis webqsp
+#        just hop-analysis cwq "30 50 100 150"
+
+hop-analysis dataset kvalues="30 50 100 150":
+    #!/usr/bin/env bash
+
+    echo "============================================================"
+    echo "HOP ANALYSIS: {{dataset}}"
+    echo "  K values: {{kvalues}}"
+    echo "============================================================"
+
+    LOG="logs/hop-analysis.log"
+    mkdir -p logs
+
+    # Build --k-values argument
+    K_ARGS=""
+    for K in {{kvalues}}; do
+        K_ARGS="$K_ARGS $K"
+    done
+
+    python scripts/run_hop_analysis.py \
+        --dataset "{{dataset}}" \
+        --k-values $K_ARGS \
+        --results-base "./results" \
+        --sample-k 1000 \
+        2>&1 | tee -a "$LOG"
+
+    echo ""
+    echo "============================================================"
+    echo "HOP ANALYSIS COMPLETE: {{dataset}}"
+    echo "  Results: ./results/hop-analysis/{{dataset}}/"
+    echo "============================================================"
+
+
+# ============================================================================
+# STATISTICAL-ANALYSIS: Compare cosine vs KGScout retrievers with case categorization
+# ============================================================================
+# Loads test dataset + model checkpoints directly (no JSON triplet parsing).
+# Categorizes each question into 6 cases based on answer coverage and path overlap.
+#
+# Model checkpoint resolution:
+#   k-ablation/{dataset}/k{K}/model/main_training_k{K}/checkpoint_best_epoch_*/path_ranker.pt
+#   → fallback: full-pipeline/{dataset}/k{K}-N1000/model/main_training_k{K}/...
+#
+# Test data path: read from config.yml (datasets.{dataset}.test)
+#
+# Usage: just statistical-analysis cwq
+#        just statistical-analysis webqsp
+#        just statistical-analysis cwq "30 50 100 150"
+
+statistical-analysis dataset kvalues="30 50 100 150":
+    #!/usr/bin/env bash
+
+    echo "============================================================"
+    echo "STATISTICAL ANALYSIS: {{dataset}}"
+    echo "  K values: {{kvalues}}"
+    echo "============================================================"
+
+    # Build --k-values argument
+    K_ARGS=""
+    for K in {{kvalues}}; do
+        K_ARGS="$K_ARGS $K"
+    done
+
+    python scripts/run_statistical_analysis.py \
+        --dataset "{{dataset}}" \
+        --k-values $K_ARGS \
+        --results-base "./results" \
+        --sample-k 1000
+
+    echo ""
+    echo "============================================================"
+    echo "STATISTICAL ANALYSIS COMPLETE: {{dataset}}"
+    echo "  Results: ./results/statistical-analysis/{{dataset}}/"
+    echo "============================================================"
