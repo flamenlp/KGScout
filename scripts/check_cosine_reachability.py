@@ -45,7 +45,7 @@ __main__.JointTrainingDatasetv3PPR = JointTrainingDatasetv3PPR
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # Default Top-N values to evaluate
-DEFAULT_TOP_N_VALUES = [1000, 1500]
+DEFAULT_TOP_N_VALUES = [500, 1000, 1500]
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 

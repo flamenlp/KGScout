@@ -1,14 +1,12 @@
 # KGScout
 
-This repository contains the official implementation of the paper **KG-Scout: A Policy Driven Knowledge-Graph Retrieval to Mitigate Factual Inaccuracies of Large Language Model**
+Official implementation of **KG-Scout: A Policy Driven Knowledge-Graph Retrieval to Mitigate Factual Inaccuracies of Large Language Model**.
 
 ## Overview
 
-KGScout is a two-phase KGQA pipeline that:
-1. Uses a trained path ranking model to select top-k relevant triplets from a knowledge graph
-2. Employs Large Language Models (LLMs) to generate answers from the selected triplets
-
-Comprehensive evaluation analysis including LLM comparison, k-value ablation studies, coverage analysis, and statistical comparisons between retriever methods are done here
+KGScout is a two-phase KGQA pipeline:
+1. **Retrieval**: A trained path ranking model selects top-k relevant triplets from a knowledge graph
+2. **Generation**: An LLM generates answers from the selected triplets
 
 ## Installation
 
@@ -16,530 +14,312 @@ Comprehensive evaluation analysis including LLM comparison, k-value ablation stu
 pip install -r requirements.txt
 ```
 
-## Quick Reference
-
-### Pipeline Workflow
-
-1. **Preprocess** → Prepare datasets with embeddings and graph features
-2. **Train** → Train the KGscout path ranking model
-3. **Inference** → Select top-k triplets using trained model
-4. **Evaluate** → Compute coverage metrics
-5. **LLM Analysis** → Compare LLMs, run ablation studies, analyze coverage and statistics
-
-### Command Summary
-
-| Command | Purpose |
-|---------|---------|
-| `train` | Train KGscout model|
-| `inference` | Select top-k triplets from test data |
-| `evaluate` | Compute answer/path coverage metrics |
-| `llm-comparison` | Compare different LLM models |
-| `k-ablation` | Evaluate different k values with Llama-3.1-8b |
-| `coverage-analysis` | Analyze coverage across k values and retrievers |
-| `statistical-analysis` | Statistical comparison with case categorization |
-
-## CLI Commands
-
-The system provides a unified CLI interface with multiple commands for different pipeline stages.
-
-### Pipeline Commands
-
-#### 1. Preprocess Dataset
-
-Prepare datasets with PPR (Personalized PageRank) features.
-
+Additionally, install [just](https://github.com/casey/just) command runner:
 ```bash
-python cli.py preprocess_dataset \
-  --input <input_file.json> \
-  --output <output_directory>
+# macOS
+brew install just
+
+# Linux
+cargo install just
 ```
 
-**Parameters:**
-- `--input`: Path to input data file
-- `--output`: Path to output directory for preprocessed data
+## Configuration
 
-**Input Format (JSON):**
-```json
-[
-  {
-    "question": "What year did the team with mascot Lou Seal win?",
-    "q_entity": ["Lou Seal", "San Francisco Giants"],
-    "a_entity": ["2010 World Series", "2012 World Series"],
-    "answer": ["2010", "2012", "2014"],
-    "triplets": [
-      ["Lou Seal", "sports.mascot.team", "San Francisco Giants"],
-      ["San Francisco Giants", "sports.team.championships", "2010 World Series"]
-    ]
-  }
-]
-```
-
-**Output:**
-- Preprocessed PyTorch tensor file (`.pt`) with embeddings and graph features
-- Saved to `{output_directory}/preprocessed_data.pt`
+All dataset paths and parameters are defined in `config.yml`. Update paths before running experiments.
 
 ---
 
-#### 2. Train Model
+## Commands
 
-Run complete training pipeline (pretraining → main training).
+### Full Pipeline
+
+Runs the complete workflow: Train → Triplet Selection → Coverage Analysis → LLM Inference.
 
 ```bash
-python cli.py train \
-  --train-data <train_file.pt> \
-  --val-data <val_file.pt> \
-  --checkpoint-dir <checkpoint_directory> \
-  --k <30|50|100|150> \
-  [--num-epochs 50] \
-  [--learning-rate 1e-4] \
-  [--weight-decay 1e-5] \
-  [--gradient-accumulation-steps 8] \
-  [--validation-interval 1] \
-  [--early-stopping-patience 10] \
-  [--warmup-steps 100]
+just full-pipeline <dataset> [top-k] [sample-k] [llm]
 ```
 
-**Parameters:**
-- `--train-data`: Path to training data file (preprocessed `.pt` file)
-- `--val-data`: Path to validation data file (preprocessed `.pt` file)
-- `--checkpoint-dir`: Directory to save model checkpoints
-- `--k`: K value for main training phase (choices: 30, 50, 100, 150)
-- `--num-epochs`: Number of epochs for main training (default: 50)
-- `--learning-rate`: Learning rate for training (default: 1e-4)
-- `--weight-decay`: Weight decay for optimizer (default: 1e-5)
-- `--gradient-accumulation-steps`: Gradient accumulation steps (default: 8)
-- `--validation-interval`: Validate every N epochs (default: 1)
-- `--early-stopping-patience`: Early stopping patience in epochs (default: 10)
-- `--warmup-steps`: Warmup steps for learning rate scheduler (default: 100)
+**Arguments:**
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `dataset` | Dataset name (`cwq`, `webqsp`) | Required |
+| `top-k` | Number of triplets to select | From config.yml |
+| `sample-k` | Training sample size | 1000 |
+| `llm` | LLM model (`llama`, `qwen`, `deepseek`) | From config.yml |
 
-**Training Pipeline:**
-1. **Pretraining Phase**: 5 epochs with n=500 (fixed)
-2. **Main Training Phase**: Uses specified k parameter and hyperparameters
+**Examples:**
+```bash
+just full-pipeline cwq                    # Use defaults from config.yml
+just full-pipeline webqsp 50              # Override top-k
+just full-pipeline cwq 100 1000 qwen      # Override top-k, sample-k, and LLM
+```
 
-**Output:**
-- Pretraining checkpoints: `{checkpoint_dir}/pretrain/`
-- Main training checkpoints: `{checkpoint_dir}/main/`
-- Training logs: `{checkpoint_dir}/logs/`
-- Best model: `{checkpoint_dir}/main/path_ranker.pt`
+**Output:** `results/full-pipeline/{dataset}/k{top-k}-N{sample-k}/`
+
+---
+
+### K-Ablation (KGScout)
+
+Trains models for multiple k values and evaluates each.
+
+```bash
+just k-ablation <dataset>
+```
+
+K values are read from `config.yml`. For each k value, the pipeline:
+1. Trains a model with that k
+2. Generates triplets
+3. Computes coverage metrics
+4. Runs LLM inference
+
+**Output:** `results/k-ablation/{dataset}/k{k}/`
+
+---
+
+### K-Ablation (Cosine Baseline)
+
+Evaluates cosine similarity retriever (no training) across multiple k values.
+
+```bash
+just k-ablation-cosine <dataset> [llm]
+```
+
+**Examples:**
+```bash
+just k-ablation-cosine cwq
+just k-ablation-cosine webqsp qwen
+```
+
+**Output:** `results/cosine-k-ablation/{dataset}/k{k}/`
+
+---
+
+### Model & Reward Ablation
+
+Runs ablation studies for model architecture variants and reward function variants.
+
+```bash
+just run-ablations <dataset>
+```
+
+**Model variants:** `no-gate`, `no-ppr`, `no-ra`, `no-ta`  
+**Reward variants:** `only_connection`, `only_presence`
+
+**Output:** `results/ablation-2/{dataset}-model-ablation/` and `results/ablation-2/{dataset}-reward-ablation/`
+
+---
+
+### Statistical Analysis
+
+Compares KGScout vs Cosine retrievers with case categorization.
+
+```bash
+just statistical-analysis <dataset> [k-values]
+```
+
+**Important:** Statistical analysis requires model checkpoints from prior training. Run `full-pipeline` or `k-ablation` first.
+
+**Arguments:**
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `dataset` | Dataset name (`cwq`, `webqsp`) | Required |
+| `k-values` | Space-separated k values (quoted) | `"30 50 100 150"` |
 
 **Example:**
 ```bash
-python cli.py train \
-  --train-data dataset/processed-dataset/webqsp-train.pt \
-  --val-data dataset/processed-dataset/webqsp-val.pt \
-  --checkpoint-dir checkpoints/webqsp-k100/ \
-  --k 100 \
-  --num-epochs 50 \
-  --learning-rate 1e-4
+just statistical-analysis cwq
+just statistical-analysis webqsp "30 50 100"
 ```
+
+**Output:** `results/statistical-analysis/{dataset}/`
 
 ---
 
-#### 3. Run Inference
+### Hop Analysis
 
-Run inference to select top-k triplets from test data.
+Stratified analysis by reasoning hop count (1-hop, 2-hop, ≥3-hop).
 
 ```bash
-python cli.py inference \
-  --model-path <model_checkpoint> \
-  --test-data <test_file.pt> \
-  --output-dir <output_directory> \
-  [--top-k 100]
+just hop-analysis <dataset> [k-values]
 ```
 
-**Parameters:**
-- `--model-path`: Path to trained model checkpoint
-- `--test-data`: Path to test data file (preprocessed `.pt` file)
-- `--output-dir`: Directory to save inference results
-- `--top-k`: Number of top triplets to select (default: 100)
-
-**Output:**
-- Selected triplets JSON: `{output_dir}/selected_triplets.json`
-- Inference statistics: Average reward, total samples processed
+**Important:** Requires model checkpoints from prior training. Run `full-pipeline` or `k-ablation` first.
 
 **Example:**
 ```bash
-python cli.py inference \
-  --model-path checkpoints/best_model/ \
-  --test-data dataset/processed-dataset/webqsp-tst.pt \
-  --output-dir results/inference/ \
-  --top-k 100
+just hop-analysis cwq
+just hop-analysis webqsp "30 50 100 150"
 ```
+
+**Output:** `results/hop-analysis/{dataset}/`
 
 ---
 
-#### 4. Evaluate Model
+### Cross-Domain Transfer
 
-Compute evaluation metrics (answer coverage, path coverage).
+Tests generalization by applying a model trained on one dataset to another.
 
 ```bash
-python cli.py evaluate \
-  --model-path <model_checkpoint> \
-  --test-data <test_file.pt> \
-  [--top-k 100]
+just cross-domain <source-dataset> <target-dataset>
 ```
 
-**Parameters:**
-- `--model-path`: Path to trained model checkpoint
-- `--test-data`: Path to test data file (preprocessed `.pt` file)
-- `--top-k`: Number of top triplets to evaluate (default: 100)
-
-**Output (printed to console):**
-- Answer Coverage: Percentage of questions where answer entities exist in selected triplets
-- Path Coverage: Percentage of questions where complete reasoning path exists
-- Average Reward: Mean reward score across all questions
+**Important:** Requires a trained model from `full-pipeline` on the source dataset.
 
 **Example:**
 ```bash
-python cli.py evaluate \
-  --model-path checkpoints/best_model/ \
-  --test-data dataset/processed-dataset/webqsp-tst.pt \
-  --top-k 100
+just cross-domain cwq webqsp    # Train on CWQ, test on WebQSP
+just cross-domain webqsp cwq    # Train on WebQSP, test on CWQ
 ```
+
+**Output:** `results/crossdomain/src-{source}-target-{target}/`
 
 ---
 
-### Evaluation Analysis Commands
+## Results Directory Structure
 
-#### 5. LLM Comparison Analysis
-
-Compare different LLM models using the same retriever configuration.
-
-```bash
-python cli.py llm-comparison \
-  --dataset <webqsp|cwq> \
-  --llm-model <llama|qwen|deepseek> \
-  --retriever-type <kgscout|cosine> \
-  --k <number> \
-  --model-path <path_to_model> \
-  --output-dir <output_directory>
 ```
-
-**Parameters:**
-- `--dataset`: Dataset to evaluate (`webqsp` or `cwq`)
-- `--llm-model`: LLM model to use (`llama` for Llama-3.1-8b, `qwen`, or `deepseek`)
-- `--retriever-type`: Triplet selection method (`kgscout` or `cosine`)
-- `--k`: Number of top triplets to select
-- `--model-path`: Path to trained KGscout model (required if `--retriever-type kgscout`)
-- `--output-dir`: Directory to save results (default: `results`)
-
-**Input Requirements:**
-- Preprocessed dataset at `dataset/processed-dataset/{dataset}-tst.pt`
-- Trained model checkpoint (if using KGscout retriever)
-- Dataset format: PyTorch tensor file with fields:
-  - `question`: Question text
-  - `q_entity`: Question entities
-  - `a_entity`: Answer entities
-  - `answer`: Ground truth answers
-  - `question_embedding`: Question embedding (384-dim)
-  - `topk_linearized_triplets`: Pre-computed cosine triplets
-  - `topk_rel_data`: List of (score, (subject, relation, object)) tuples
-  - `topK_rel_embeddings`: Relation embeddings
-  - `graph_features`: Graph structure features
-
-**Output:**
-- Directory structure: `{output_dir}/{dataset}/{retriever}-k{k}/`
-- Files generated:
-  - `predictions.txt`: One prediction per line
-  - `results.jsonl`: Detailed per-question results (JSON Lines format)
-  - `summary.json`: Aggregated metrics
-    - Hit, Hit@1, Macro F1, Precision, Recall, Exact Match
-    - Total questions processed
-
-**Example:**
-```bash
-# Compare Llama with KGscout retriever
-python cli.py llm-comparison \
-  --dataset webqsp \
-  --llm-model llama \
-  --retriever-type kgscout \
-  --k 100 \
-  --model-path checkpoints/best_model/ \
-  --output-dir results/
-
-# Compare Qwen with cosine retriever
-python cli.py llm-comparison \
-  --dataset cwq \
-  --llm-model qwen \
-  --retriever-type cosine \
-  --k 50 \
-  --output-dir results/
+results/
+├── full-pipeline/
+│   └── {dataset}/
+│       └── k{top-k}-N{sample-k}/
+│           ├── model/                    # Trained checkpoint
+│           ├── triplet-analysis/
+│           │   └── selected_triplets.json
+│           ├── triplet_metrics/
+│           │   └── coverage_metrics.json
+│           └── {llm}-inference/
+│               ├── llm_metrics.json
+│               └── llm_detailed_results.json
+│
+├── k-ablation/
+│   └── {dataset}/
+│       └── k{k}/
+│           ├── model/
+│           ├── triplet-analysis/
+│           ├── triplet_metrics/
+│           └── model-result/
+│
+├── cosine-k-ablation/
+│   └── {dataset}/
+│       └── k{k}/
+│           ├── triplet-analysis/
+│           ├── triplet_metrics/
+│           └── {llm}-inference/
+│
+├── ablation-2/
+│   ├── {dataset}-model-ablation/
+│   │   └── {variant}/                   # no-gate, no-ppr, no-ra, no-ta
+│   │       ├── model/
+│   │       ├── triplet-result/
+│   │       ├── triplet_metrics/
+│   │       └── llama-inference/
+│   └── {dataset}-reward-ablation/
+│       └── {variant}/                   # only_connection, only_presence
+│           └── ...
+│
+├── statistical-analysis/
+│   └── {dataset}/
+│       ├── k{k}_statistical_analysis.json
+│       └── summary.json
+│
+├── hop-analysis/
+│   └── {dataset}/
+│       ├── hop_labels.json
+│       ├── k{k}_hop_analysis.json
+│       └── summary.json
+│
+└── crossdomain/
+    └── src-{source}-target-{target}/
+        ├── triplet-result/
+        ├── triplet_metrics/
+        └── llama-inference/
 ```
-
----
-
-#### 6. K-Value Ablation Study
-
-Evaluate how different k values affect answer quality using Llama-3.1-8b.
-
-```bash
-python cli.py k-ablation \
-  --dataset <webqsp|cwq> \
-  --retriever-type <kgscout|cosine> \
-  --k-values <comma_separated_values> \
-  --model-path <path_to_model> \
-  --output-dir <output_directory>
-```
-
-**Parameters:**
-- `--dataset`: Dataset to evaluate (`webqsp` or `cwq`)
-- `--retriever-type`: Triplet selection method (`kgscout` or `cosine`)
-- `--k-values`: Comma-separated list of k values (default: `30,50,100,150`)
-- `--k`: Single k value (overrides `--k-values` if provided)
-- `--model-path`: Path to trained KGscout model (required if `--retriever-type kgscout`)
-- `--output-dir`: Directory to save results (default: `results`)
-
-**Input Requirements:**
-- Same as LLM Comparison Analysis
-
-**Output:**
-- Individual results for each k-value in: `{output_dir}/{dataset}/{retriever}-k{k}/`
-- Summary file: `{output_dir}/{dataset}/{retriever}-ablation/k_ablation_summary_{timestamp}.json`
-  - Metadata: timestamp, dataset, retriever type, k-values tested
-  - Results by k-value: metrics for each k
-  - Comparison table: formatted table showing metrics across all k-values
-
-**Example:**
-```bash
-# Test multiple k-values with KGscout
-python cli.py k-ablation \
-  --dataset webqsp \
-  --retriever-type kgscout \
-  --k-values 30,50,100,150 \
-  --model-path checkpoints/best_model/ \
-  --output-dir results/
-
-# Test single k-value with cosine
-python cli.py k-ablation \
-  --dataset cwq \
-  --retriever-type cosine \
-  --k 100 \
-  --output-dir results/
-```
-
----
-
-#### 7. Coverage Analysis
-
-Measure answer and path coverage for different k values, comparing KGscout vs Cosine retriever.
-
-```bash
-python cli.py coverage-analysis \
-  --dataset <webqsp|cwq> \
-  --model-path <path_to_model> \
-  --k-values <comma_separated_values> \
-  --output-dir <output_directory>
-```
-
-**Parameters:**
-- `--dataset`: Dataset to evaluate (`webqsp` or `cwq`)
-- `--model-path`: Path to trained KGscout model
-- `--k-values`: Comma-separated list of k values (default: `30,50,100,150`)
-- `--output-dir`: Directory to save results (default: `results/coverage`)
-
-**Input Requirements:**
-- Same as LLM Comparison Analysis
-
-**Output:**
-- File: `{output_dir}/coverage_analysis_{timestamp}.json`
-  - Metadata: timestamp, dataset, k-values
-  - Results: Coverage metrics for both retrievers at each k-value
-    - `answer_coverage`: Percentage of questions where answer entities exist in triplets
-    - `path_coverage`: Percentage of questions where complete reasoning path exists
-    - Counts and totals for each metric
-  - Comparison table: Formatted table comparing both retrievers
-
-**Example:**
-```bash
-python cli.py coverage-analysis \
-  --dataset webqsp \
-  --model-path checkpoints/best_model/ \
-  --k-values 30,50,100,150 \
-  --output-dir results/coverage/
-```
-
----
-
-#### 8. Statistical Analysis
-
-Comprehensive statistical comparison between Cosine and KGscout retrievers with case categorization.
-
-```bash
-python cli.py statistical-analysis \
-  --dataset <webqsp|cwq> \
-  --model-path <path_to_model> \
-  --k <number> \
-  --output-dir <output_directory>
-```
-
-**Parameters:**
-- `--dataset`: Dataset to evaluate (`webqsp` or `cwq`)
-- `--model-path`: Path to trained KGscout model
-- `--k`: Number of top triplets to select
-- `--output-dir`: Directory to save results (default: `results/statistical`)
-
-**Input Requirements:**
-- Same as LLM Comparison Analysis
-
-**Output:**
-- File: `{output_dir}/statistical_analysis_{timestamp}.json`
-  - Metadata: timestamp, dataset, k, total questions
-  - Case statistics: Count and percentage for each case
-    - **Case 1**: Cosine no relevant, KGscout some relevant
-    - **Case 2**: Cosine relevant no path, KGscout has path
-    - **Case 3**: Both have relevant triplets (overlapping paths)
-    - **Case 4**: Both have relevant triplets (non-overlapping paths)
-    - **Case 5**: Cosine better than KGscout
-    - **Case 6**: Both fail
-  - Examples per case: Up to 5 example questions for each case
-
-**Example:**
-```bash
-python cli.py statistical-analysis \
-  --dataset webqsp \
-  --model-path checkpoints/best_model/ \
-  --k 100 \
-  --output-dir results/statistical/
-```
-
----
-
-## Dataset Format
-
-Preprocessed datasets should be PyTorch tensor files (`.pt`) with the following structure:
-
-```python
-[
-  {
-    "question": str,                    # Natural language question
-    "q_entity": List[str],              # Question entities
-    "a_entity": List[str],              # Answer entities
-    "answer": List[str],                # Ground truth answers
-    "question_embedding": torch.Tensor, # Question embedding (384-dim)
-    "topk_linearized_triplets": List[str],  # Cosine-selected triplets
-    "topk_linearized_triplet_embeddings": torch.Tensor,  # Triplet embeddings
-    "topk_rel_data": List[Tuple[float, Tuple[str, str, str]]],  # (score, (s, r, o))
-    "topK_rel_embeddings": torch.Tensor,  # Relation embeddings
-    "graph_features": torch.Tensor,     # Graph structure features
-    "is_empty": bool                    # Whether question has no valid triplets
-  },
-  ...
-]
-```
-
-**Expected Locations:**
-- WebQSP test set: `dataset/processed-dataset/webqsp-tst.pt`
-- CWQ test set: `dataset/processed-dataset/cwq-tst.pt`
-
----
-
-## Model Checkpoint Format
-
-KGscout model checkpoints should be saved using the `PathRankingModel.save_pretrained()` method.
-
-**Expected Structure:**
-```
-checkpoints/best_model/
-├── path_ranker.pt          # Model state dict
-└── config.json             # Model configuration (optional)
-```
-
-The checkpoint should contain:
-- `model_state_dict`: Model parameters
-- `hidden_size`: Hidden dimension size
-- `temperature`: Temperature parameter
-- `baseline`: Baseline value
 
 ---
 
 ## Output File Formats
 
-### LLM Comparison & K-Ablation
+### selected_triplets.json
 
-**predictions.txt**
-```
-predicted_answer_1
-predicted_answer_2
-...
-```
+Contains selected triplets for each question with metadata.
 
-**results.jsonl** (JSON Lines format)
 ```json
-{"question": "...", "predicted": ["..."], "ground_truth": ["..."], "hit": 1.0, "f1": 0.85, ...}
-{"question": "...", "predicted": ["..."], "ground_truth": ["..."], "hit": 0.0, "f1": 0.0, ...}
-```
-
-**summary.json**
-```json
-{
-  "dataset": "webqsp",
-  "retriever_type": "kgscout",
-  "k": 100,
-  "metrics": {
-    "hit": 0.75,
-    "hit_at_1": 0.68,
-    "macro_f1": 0.72,
-    "macro_precision": 0.70,
-    "macro_recall": 0.74,
-    "exact_match": 0.45
-  },
-  "total_questions": 1000
-}
-```
-
-### Coverage Analysis
-
-**coverage_analysis_{timestamp}.json**
-```json
-{
-  "metadata": {
-    "timestamp": "20240315_143022",
-    "dataset": "webqsp",
-    "k_values": [30, 50, 100, 150]
-  },
-  "results": {
-    "kgscout": {
-      "30": {"answer_coverage": 0.75, "path_coverage": 0.60},
-      "50": {"answer_coverage": 0.82, "path_coverage": 0.68}
-    },
-    "cosine": {
-      "30": {"answer_coverage": 0.70, "path_coverage": 0.55},
-      "50": {"answer_coverage": 0.78, "path_coverage": 0.63}
-    }
-  },
-  "comparison_table": "..."
-}
-```
-
-### Statistical Analysis
-
-**statistical_analysis_{timestamp}.json**
-```json
-{
-  "metadata": {
-    "timestamp": "20240315_143022",
-    "dataset": "webqsp",
-    "k": 100,
-    "total_questions": 1000
-  },
-  "case_statistics": {
-    "case1": {
-      "count": 150,
-      "percentage": 15.0,
-      "description": "Cosine no relevant, KGscout some relevant"
-    },
-    ...
-  },
-  "examples_per_case": {
-    "case1": [
-      {
-        "question_id": 42,
-        "question": "...",
-        "cosine_triplet_count": 0,
-        "kgscout_triplet_count": 100
-      },
-      ...
-    ]
+[
+  {
+    "question": "...",
+    "q_entity": ["..."],
+    "a_entity": ["..."],
+    "answer": ["..."],
+    "selected_triplets": [["subject", "relation", "object"], ...]
   }
+]
+```
+
+### coverage_metrics.json
+
+Retrieval quality metrics.
+
+```json
+{
+  "total_samples": 3531,
+  "answer_coverage": 0.634,
+  "path_coverage": 0.614,
+  "answer_coverage_count": 2239,
+  "path_coverage_count": 2167
 }
 ```
+
+| Metric | Description |
+|--------|-------------|
+| `answer_coverage` | Fraction of questions where answer entities appear in selected triplets |
+| `path_connectivity` | Fraction of questions where a complete reasoning path exists |
+
+### llm_metrics.json
+
+LLM answer generation metrics.
+
+```json
+{
+  "hit": 52.96,
+  "hit_at_1": 43.44,
+  "macro_f1": 39.23,
+  "macro_precision": 40.48,
+  "macro_recall": 46.90,
+  "exact_match": 27.98,
+  "totally_wrong": 47.04,
+  "total_samples": 3531,
+  "inference_time_seconds": 4463.31,
+  "throughput_samples_per_sec": 0.79
+}
+```
+
+| Metric | Description |
+|--------|-------------|
+| `hit` | % of questions with at least one correct answer |
+| `macro_f1` | Macro-averaged F1 score |
+| `exact_match` | % of questions with exact answer match |
+
+### statistical_analysis.json
+
+Case-wise comparison between Cosine and KGScout retrievers.
+
+| Case | Description |
+|------|-------------|
+| Case 1 | Cosine finds no relevant triplets, KGScout finds some |
+| Case 2 | Cosine finds relevant triplets but no path, KGScout finds path |
+| Case 3 | Both find paths with high overlap (Jaccard ≥ 0.7) |
+| Case 4 | Both find paths with low overlap (Jaccard ≤ 0.3) |
+| Case 5 | Cosine outperforms KGScout |
+| Case 6 | Both fail to find relevant triplets |
+
+---
+
+## Constraints & Dependencies
+
+1. **Statistical analysis** and **hop analysis** require pre-trained model checkpoints. Run `full-pipeline` or `k-ablation` first.
+
+2. **Cross-domain transfer** requires a trained model from `full-pipeline` on the source dataset.
+
+3. All commands skip steps if output files already exist. Delete existing outputs to re-run.
+
+4. Logs are saved to `logs/` directory.
