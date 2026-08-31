@@ -110,12 +110,12 @@ class PathRankingModel(nn.Module):
         # Ensure question_embed has batch dimension
         question_embed = question_embed.unsqueeze(0) if question_embed.dim() == 1 else question_embed
         
-        # REVERSED: Query=question(1,d), Key=Value=triplets(N,d)
+        # Query=question(1,d), Key=Value=triplets(N,d)
         triplet_attended, triplet_weights = self.question_triplet_attention(
             question_embed, triplet_embeds, triplet_embeds
         )  # triplet_attended: (1, d), triplet_weights: (1, N)
         
-        # REVERSED: Query=question(1,d), Key=Value=relations(N,d)
+        # Query=question(1,d), Key=Value=relations(N,d)
         relation_attended, relation_weights = self.question_relation_attention(
             question_embed, relation_embeds, relation_embeds
         )  # relation_attended: (1, d), relation_weights: (1, N)
