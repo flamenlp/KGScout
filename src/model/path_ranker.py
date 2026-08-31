@@ -10,9 +10,7 @@ import torch.nn.functional as F
 
 class PathRankingModel(nn.Module):
     """
-    Neural model for ranking knowledge graph triplets using REVERSED attention mechanisms.
-    
-    Architecture (Reversed Attention):
+    Architecture:
     - Question-triplet attention: Query=Question(1,d), Key=Value=Triplets(N,d)
       → question attends over triplets, producing 1×d summary + N attention weights
     - Question-relation attention: Query=Question(1,d), Key=Value=Relations(N,d)
@@ -254,7 +252,7 @@ class PathRankingModel(nn.Module):
     @classmethod
     def from_pretrained(cls, load_directory: str, device: str = "cuda") -> "PathRankingModel":
         """
-        Load model from directory with error handling.
+        Load model from directory.
         
         Args:
             load_directory: Directory containing saved model
